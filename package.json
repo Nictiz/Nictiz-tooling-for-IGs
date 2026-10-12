@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Tools for working with IGs within Nictiz",
   "bin": {
-    "excel-to-artifacts": "src/excel-to-artifacts.js"
+    "excel-to-artifacts": "src/excel-to-artifacts.js",
+    "translate-menu": "src/translate-menu.js"
   },
   "engines": {
     "node": ">=18"
