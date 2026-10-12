@@ -3,6 +3,7 @@ const XLSX = require("xlsx");
 const fs = require("fs");
 const path = require("path");
 const commander = require("commander");
+const YAML = require("yaml");
 
 const serverSourceUrl = "https://decor.nictiz.nl";
 const translationExtensionUrl = "http://hl7.org/fhir/StructureDefinition/translation";
@@ -70,15 +71,19 @@ class TargetFolders {
 }
 
 class ActorDefinitionDownloader {
-  static actorDefinitionsUrl = serverSourceUrl + "/fhir/4.0/gbb2026bbr-/ActorDefinition?publisher=gbb2026bbr-&_format=json";
-
-  constructor(outputFolder) {
+  constructor(adProject, outputFolder) {
+    if (!adProject) {
+      console.error("No ART-DECOR project specified as source for the ActorDefinitions");
+      process.exit(1);
+    }
+    this.adProject = adProject;
     this.outputFolder = outputFolder;
   }
 
   async downloadAll() {
     try {
-      const body = await this.#fetchJson(ActorDefinitionDownloader.actorDefinitionsUrl);
+      const actorDefinitionsUrl = `${serverSourceUrl}/fhir/4.0/${this.adProject}/ActorDefinition?publisher=${this.adProject}&_format=json`;
+      const body = await this.#fetchJson(actorDefinitionsUrl);
       const usedFileNames = new Set();
 
       for (const actorDefinition of this.#getActorDefinitions(body)) {
@@ -144,14 +149,17 @@ class ActorDefinitionDownloader {
 }
 
 class ValueSetDownloader {
-  static searchUrl = "https://decor.nictiz.nl/fhir/4.0/gbb2026bbr-/ValueSet";
   static skippedCanonicalPrefixes = [
     "http://hl7.org",
     "http://terminology.hl7.org",
     "http://decor.nictiz.nl"
   ];
 
-  constructor(outputFolder) {
+  constructor(adProject, outputFolder) {
+    if (!adProject) {
+      console.error("No ART-DECOR project defined for downloading ValueSets");
+      process.exit(1);
+    }
     this.outputFolder = outputFolder;
     this.downloadedCanonicals = new Set();
     this.pendingDownloads = new Map();
@@ -260,7 +268,7 @@ class ValueSetDownloader {
 
   #toDownloadUrl(canonical) {
     const resourceUrl = new URL(canonical.split("|")[0]);
-    const searchUrl = new URL(ValueSetDownloader.searchUrl);
+    const searchUrl = new URL(`${serverSourceUrl}/fhir/4.0/${this.adProject}/ValueSet`);
     searchUrl.searchParams.set("url", resourceUrl);
     searchUrl.searchParams.set("_format", "json");
     return searchUrl.toString();
@@ -373,8 +381,6 @@ class ExcelConvertor {
   
   static textADId          = "ART-DECOR-id";
 
-  static adProjectUrl      = serverSourceUrl + "/fhir/4.0/gbb2026bbr-/StructureDefinition";
-
   constructor(inputFile, targetFolders, valueSetDownloader) {
     this.inputFile = inputFile;
     this.fileRoot = path.basename(inputFile.name, path.extname(inputFile.name));
@@ -468,7 +474,12 @@ class ExcelConvertor {
     console.log(`Wrote ${outputFile}`);
   }
 
-  async getLogicalModel() {
+  async getLogicalModel(adProject) {
+    if (!adProject) {
+      console.error("No ART-DECOR project defined for downloading logical models");
+      process.exit(1);
+    }
+
     let rows = this.#getRows(ExcelConvertor.sheetConcept);
     if (rows == null) return;
     
@@ -484,11 +495,11 @@ class ExcelConvertor {
     
     const id_parts = ad_id.split("/");
     const id_date = id_parts[1].replace(/-/g, "").replace(/:/g, "").replace("T", "");
-    const fetch_url = `${ExcelConvertor.adProjectUrl}/${id_parts[0]}--${id_date}?_format=json&language=en-US`;
+    const fetch_url = `${serverSourceUrl}/fhir/4.0/${adProject}/StructureDefinition/${id_parts[0]}--${id_date}?_format=json&language=en-US`;
     try {
       const response = await fetch(`${fetch_url}`);
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${response.statusText} - ${ExcelConvertor.adProjectUrl}/${id_parts[0]}--${id_date}?_format=json`);
+        throw new Error(`HTTP ${response.status} ${response.statusText} - ${fetch_url}`);
       }
 
       const body = await response.json();
@@ -557,6 +568,35 @@ class ExcelConvertor {
   }
 }
 
+function parseSushiYaml() {
+  const configPath = path.resolve("sushi-config.yaml");
+
+  if (!fs.existsSync(configPath)) {
+    console.error(`Config file not found: ${configPath}`);
+    process.exit(1);
+  }
+
+  let adProject = null;
+  try {
+    const text = fs.readFileSync(configPath, "utf8");
+    const config = YAML.parse(text);
+
+    const igConfig = config?.["nictizIgConfig"];
+
+    if (igConfig && Object.prototype.hasOwnProperty.call(igConfig, "ad-project")) {
+      adProject = igConfig["ad-project"];
+    } else {
+      console.warn('Warning: there is no ART-DECOR project configured in sushi-config.yaml. Use the "ad-project" parameter in section "nictizIgCconfig" to do so.');
+      adProject = null;
+    }
+  } catch (error) {
+    console.error(`Could not read or parse ${configPath}: ${error.message}`);
+    process.exit(1);
+  }
+
+  return adProject;
+}
+
 async function main() {
   commander.program
     .option("--requirements", "Create Requirements resources from Excel")
@@ -566,6 +606,8 @@ async function main() {
     .argument('<inputFolder>')
     .argument('<outputFolder>')
   commander.program.parse()
+
+  const adProject = parseSushiYaml();
 
   const inputFolder = commander.program.args[0];
   const outputFolder = commander.program.args[1];
@@ -584,13 +626,13 @@ async function main() {
   const targetFolders = new TargetFolders(outputFolder);
 
   if (downloadActors) {
-    const actorDefinitionDownloader = new ActorDefinitionDownloader(targetFolders.get("Resources"));
+    const actorDefinitionDownloader = new ActorDefinitionDownloader(adProject, targetFolders.get("Resources"));
     await actorDefinitionDownloader.downloadAll();
   }
 
   let valueSetDownloader = null;
   if (descend) {
-    valueSetDownloader = new ValueSetDownloader(targetFolders.get("Vocabulary"));
+    valueSetDownloader = new ValueSetDownloader(adProject, targetFolders.get("Vocabulary"));
   }
 
   if (!fs.existsSync(inputFolder)) {
@@ -611,7 +653,7 @@ async function main() {
     }
 
     if (downloadLogicalModels) {
-      await convertor.getLogicalModel();
+      await convertor.getLogicalModel(adProject);
     }
   }
 
