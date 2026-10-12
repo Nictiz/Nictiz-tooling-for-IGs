@@ -1,5 +1,4 @@
-#!/usr/bin/env node
-
+const commander = require("commander");
 const fs = require("node:fs");
 const path = require("node:path");
 const { Fhir } = require("fhir-tool");
@@ -7,8 +6,7 @@ const { parseAllDocuments, isMap, isSeq } = require("yaml");
 
 const OBLIGATION_URL = "http://hl7.org/fhir/StructureDefinition/obligation";
 
-class CliParser {
-  static YAML_FORMAT = `
+const YAML_FORMAT = `
 ...
 [profile id]:
   unmatched obligations:
@@ -19,161 +17,6 @@ class CliParser {
         reason: [explanation for the mismatch]
 ...
 `;
-
-  static USAGE = `
-Usage:
-  node sync-obligations.js \\
-    [--copy] \\
-    [--suppressions <file.yaml>] \\
-    --lm-folder <folder> \\
-    --actor <canonical> [--actor <canonical> ...] \\
-    <profile.xml> [<profile.xml> ...]
-
-Arguments:
-  profile.xml
-      One or more FHIR profile StructureDefinitions in XML format.
-
-Required options:
-  --lm-folder <folder>
-      Folder containing logical model StructureDefinitions in JSON format.
-
-      The folder is searched recursively. Every .json file containing a
-      StructureDefinition is indexed by its canonical URL.
-
-  --actor <canonical>
-      Check obligations that apply to this ActorDefinition.
-
-      At least one --actor option is required. The option may be repeated.
-
-      Canonical versions are ignored when matching. For example:
-
-        https://example.org/ActorDefinition/sender|1.0.0
-
-      matches:
-
-        https://example.org/ActorDefinition/sender
-
-      Obligations without an actor are ignored.
-
-Other options:
-  --copy
-      Copy matching obligation extensions from the logical models to the
-      profiles and update the profile XML files in place.
-
-      Without --copy, profiles are not modified. The script reports:
-
-      - an obligation exists in a logical model but not in the profile;
-      - the obligation codes for an actor differ;
-      - an obligation exists in the profile but not in the logical model.
-
-  --suppressions <file.yaml>
-      Suppress known discrepancies in check mode.
-
-      The format for the YAML file is:
-
-${CliParser.YAML_FORMAT.trim().split("\n").map((line) => `      ${line}`).join("\n")}
-
-      This option cannot be combined with --copy.
-
-  --help, -h
-      Show this help.
-`;
-
-  constructor() {
-    this.options = undefined;
-  }
-
-  printUsage() {
-    console.log(CliParser.USAGE.trim());
-  }
-
-  parse() {
-    this.options = {
-      actors: [],
-      copy: false,
-      suppressionsFilename: undefined,
-      logicalModelFolder: undefined,
-      profileFilenames: [],
-    };
-
-    const positionalArguments = [];
-
-    for (let index = 2; index < process.argv.length; index += 1) {
-      const argument = process.argv[index];
-
-      switch (argument) {
-        case "--actor": {
-          const actor = process.argv[++index];
-
-          if (!actor || actor.startsWith("--")) {
-            throw new Error("--actor requires a canonical URL.");
-          }
-
-          this.options.actors.push(actor);
-          break;
-        }
-
-        case "--lm-folder": {
-          const folder = process.argv[++index];
-
-          if (!folder || folder.startsWith("--")) {
-            throw new Error("--lm-folder requires a folder.");
-          }
-
-          this.options.logicalModelFolder = folder;
-          break;
-        }
-
-        case "--copy":
-          this.options.copy = true;
-          break;
-
-        case "--suppressions": {
-          const filename = process.argv[++index];
-
-          if (!filename || filename.startsWith("--")) {
-            throw new Error("--suppressions requires a YAML filename.");
-          }
-
-          this.options.suppressionsFilename = filename;
-          break;
-        }
-
-        case "--help":
-        case "-h":
-          this.printUsage();
-          process.exit(0);
-          break;
-
-        default:
-          if (argument.startsWith("--")) {
-            throw new Error(`Unknown option "${argument}".`);
-          }
-
-          positionalArguments.push(argument);
-          break;
-      }
-    }
-
-    if (!this.options.logicalModelFolder) {
-      throw new Error("--lm-folder is required.");
-    }
-
-    if (this.options.actors.length === 0) {
-      throw new Error("At least one --actor option is required.");
-    }
-
-    if (positionalArguments.length === 0) {
-      throw new Error("At least one profile XML file is required.");
-    }
-
-    if (this.options.copy && this.options.suppressionsFilename) {
-      throw new Error("--suppressions can only be used in check mode, without --copy.");
-    }
-
-    this.options.profileFilenames = positionalArguments;
-  }
-}
 
 class Suppressions {
   #suppressions = new Map();
@@ -722,22 +565,41 @@ class StructureDefinitionHandler {
   }
 }
 
+function parseArgs() {
+    commander.program
+      .requiredOption("--lm-folder <folder>", "Folder containing logical model StructureDefinitions in JSON format. Searched recursively; StructureDefinitions are indexed by canonical URL.")
+      .requiredOption("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous.concat([value]), [])
+      .option("--copy", "Copy matching obligation extensions from logical models to profiles and update the profile XML files in place.")
+      .addOption(new commander.Option("--suppressions <file.yaml>", "Suppress known discrepancies in check mode. Cannot be used in copy mode.").conflicts("--copy"))
+      .argument("<profile.xml...>", "One or more FHIR profile StructureDefinitions in XML format.")
+      .addHelpText("after", `
+
+Suppression file format:
+
+${YAML_FORMAT.trim().split("\n").map((line) => `  ${line}`).join("\n")}`);
+    
+    commander.program.parse();
+
+    return commander.program;
+}
+
 function main() {
-  const cliParser = new CliParser();
-  cliParser.parse();
+  const cliParser = parseArgs();
+  const cliOptions = cliParser.opts();
+  const profiles = cliParser.args;
 
   const sdHandler = new StructureDefinitionHandler();
 
-  const lmRegistry = new LogicalModelRegistry(cliParser.options.logicalModelFolder, sdHandler);
+  const lmRegistry = new LogicalModelRegistry(cliOptions.logicalModelFolder, sdHandler);
   console.log(`Indexed ${lmRegistry.size} logical ${lmRegistry.size === 1 ? "model" : "models"}.`);
 
-  const selectedActors = new Set(cliParser.options.actors.map(stripVersionFromCanonical));
+  const selectedActors = new Set(cliOptions.actors.map(stripVersionFromCanonical));
   console.log("Actors:");
   for (const actor of selectedActors) {
     console.log(`  ${actor}`);
   }
 
-  const suppressions = new Suppressions(cliParser.options.suppressionsFilename);
+  const suppressions = new Suppressions(cliOptions.suppressionsFilename);
 
   let totalDiscrepancyCount = 0;
   let totalTargetMissingCount = 0;
@@ -745,7 +607,7 @@ function main() {
   let processedProfileCount = 0;
   let skippedProfileCount = 0;
 
-  for (const profileFilename of cliParser.options.profileFilenames) {
+  for (const profileFilename of profiles) {
     const profile = sdHandler.readXML(profileFilename);
     const comparator = new ObligationComparator(profile, lmRegistry, selectedActors, suppressions);
 
@@ -759,7 +621,7 @@ function main() {
     }
     processedProfileCount += 1;
 
-    if (cliParser.options.copy) {
+    if (cliOptions.copy) {
       console.log("  Mode: copy");
       comparator.copy();
       sdHandler.writeXML(comparator.profile, profileFilename);
