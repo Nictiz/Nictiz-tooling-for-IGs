@@ -161,6 +161,7 @@ class ValueSetDownloader {
       console.error("No ART-DECOR project defined for downloading ValueSets");
       process.exit(1);
     }
+    this.adProject = adProject;
     this.outputFolder = outputFolder;
     this.downloadedCanonicals = new Set();
     this.pendingDownloads = new Map();
@@ -603,7 +604,8 @@ async function main() {
     .option("--requirements", "Create Requirements resources from Excel")
     .option("--actors", "Download ActorDefinitions from ART-DECOR")
     .option("--lm", "Download logical model StructureDefinitions from ART-DECOR")
-    .option("--dont-descend", "When downloading material from ART-DECOR, don't download materials included from those materials")
+    .option("--profile-artifacts", "Download referenced artifacts on ART-DECOR from profiles")
+    .addOption(new commander.Option("--dont-descend", "When downloading material from ART-DECOR, don't download materials included from those materials").conflicts("profile-artifacts"))
     .argument('<inputFolder>')
     .argument('<outputFolder>')
   commander.program.parse()
@@ -616,12 +618,14 @@ async function main() {
   let createRequirements = commander.program.opts()['requirements'];
   let downloadActors = commander.program.opts()['actors'];
   let downloadLogicalModels = commander.program.opts()['lm'];
+  let downloadArtifactsFromProfiles = commander.program.opts()['profileArtifacts']
   const descend = !(commander.program.opts()['dontDescend'] === true);
-  if (!createRequirements && !downloadActors && !downloadLogicalModels) {
+  if (!createRequirements && !downloadActors && !downloadLogicalModels && !downloadArtifactsFromProfiles) {
     // If no explicit action is given, do everything
     createRequirements = true;
     downloadActors = true;
     downloadLogicalModels = true;
+    downloadArtifactsFromProfiles = true;
   }
 
   const targetFolders = new TargetFolders(outputFolder);
@@ -632,7 +636,7 @@ async function main() {
   }
 
   let valueSetDownloader = null;
-  if (descend) {
+  if ((downloadLogicalModels || downloadArtifactsFromProfiles) && descend) {
     valueSetDownloader = new ValueSetDownloader(adProject, targetFolders.get("Vocabulary"));
   }
 
@@ -640,13 +644,7 @@ async function main() {
     return;
   }
 
-  if (downloadLogicalModels && valueSetDownloader) {
-    const profileFolder = path.join(path.dirname(inputFolder), "profiles");
-    const profileValueSetCollector = new ProfileValueSetCollector(profileFolder);
-    await valueSetDownloader.downloadAll(profileValueSetCollector.getBindingValueSetCanonicals());
-  }
-
-  for (const excelFile of fs.readdirSync(inputFolder, {withFileTypes: true}).filter(file => /\.(xlsx|xlsm|xls)$/i.test(file.name)).filter(file => !file.name.startsWith('~$'))) {
+  for (const excelFile of fs.readdirSync(path.join(inputFolder, "requirements"), {withFileTypes: true}).filter(file => /\.(xlsx|xlsm|xls)$/i.test(file.name)).filter(file => !file.name.startsWith('~$'))) {
     const convertor = new ExcelConvertor(excelFile, targetFolders, valueSetDownloader);
     if (createRequirements) {
       convertor.convertRequirements();
@@ -656,6 +654,12 @@ async function main() {
     if (downloadLogicalModels) {
       await convertor.getLogicalModel(adProject);
     }
+  }
+
+  if (downloadArtifactsFromProfiles) {
+    const profileFolder = path.join(path.dirname(inputFolder), "profiles");
+    const profileValueSetCollector = new ProfileValueSetCollector(profileFolder);
+    await valueSetDownloader.downloadAll(profileValueSetCollector.getBindingValueSetCanonicals());
   }
 
 }
