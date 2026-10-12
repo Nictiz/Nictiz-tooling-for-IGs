@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 // excel-to-requirements.js
 const XLSX = require("xlsx");
 const fs = require("fs");
@@ -149,7 +147,8 @@ class ValueSetDownloader {
   static searchUrl = "https://decor.nictiz.nl/fhir/4.0/gbb2026bbr-/ValueSet";
   static skippedCanonicalPrefixes = [
     "http://hl7.org",
-    "http://terminology.hl7.org"
+    "http://terminology.hl7.org",
+    "http://decor.nictiz.nl"
   ];
 
   constructor(outputFolder) {
@@ -273,6 +272,88 @@ class ValueSetDownloader {
 
   #safeFileName(fileName) {
     return fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+  }
+}
+
+class ProfileValueSetCollector {
+  constructor(profileFolder) {
+    this.profileFolder = profileFolder;
+  }
+
+  getBindingValueSetCanonicals() {
+    if (!fs.existsSync(this.profileFolder)) return [];
+
+    const canonicals = new Set();
+    for (const profileFile of this.#getXmlFiles(this.profileFolder)) {
+      try {
+        this.#addBindingValueSetCanonicals(
+          canonicals,
+          fs.readFileSync(profileFile, "utf8")
+        );
+      } catch (error) {
+        console.warn(`Couldn't read bindings from profile ${profileFile}, "${error.message}"`);
+      }
+    }
+
+    return Array.from(canonicals);
+  }
+
+  #getXmlFiles(folder) {
+    const files = [];
+
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      const entryPath = path.join(folder, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...this.#getXmlFiles(entryPath));
+      } else if (entry.isFile() && path.extname(entry.name).toLowerCase() == ".xml") {
+        files.push(entryPath);
+      }
+    }
+
+    return files;
+  }
+
+  #addBindingValueSetCanonicals(canonicals, xml) {
+    const xmlWithoutComments = xml.replace(/<!--[\s\S]*?-->/g, "");
+    const bindingPattern = /<(?:[\w.-]+:)?binding\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?binding\s*>/gi;
+
+    for (const bindingMatch of xmlWithoutComments.matchAll(bindingPattern)) {
+      const bindingXml = bindingMatch[1];
+
+      // Covers regular bindings and valueCanonical/valueUri primitives in
+      // additional-binding extensions.
+      const valuePattern = /<(?:[\w.-]+:)?(?:valueSet|valueSetCanonical|valueSetUri|valueCanonical|valueUri)\b[^>]*\bvalue\s*=\s*(["'])(.*?)\1/gi;
+      for (const valueMatch of bindingXml.matchAll(valuePattern)) {
+        this.#addCanonical(canonicals, valueMatch[2]);
+      }
+
+      // Older FHIR profiles may express a binding as valueSetReference.
+      const referenceBlockPattern = /<(?:[\w.-]+:)?valueSetReference\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?valueSetReference\s*>/gi;
+      for (const referenceBlockMatch of bindingXml.matchAll(referenceBlockPattern)) {
+        const referencePattern = /<(?:[\w.-]+:)?reference\b[^>]*\bvalue\s*=\s*(["'])(.*?)\1/gi;
+        for (const referenceMatch of referenceBlockMatch[1].matchAll(referencePattern)) {
+          this.#addCanonical(canonicals, referenceMatch[2]);
+        }
+      }
+    }
+  }
+
+  #addCanonical(canonicals, canonical) {
+    const decodedCanonical = this.#decodeXmlAttribute(canonical).trim();
+    if (decodedCanonical) {
+      canonicals.add(decodedCanonical);
+    }
+  }
+
+  #decodeXmlAttribute(value) {
+    return value
+      .replace(/&#x([0-9a-f]+);/gi, (_match, codePoint) => String.fromCodePoint(parseInt(codePoint, 16)))
+      .replace(/&#([0-9]+);/g, (_match, codePoint) => String.fromCodePoint(parseInt(codePoint, 10)))
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&");
   }
 }
 
@@ -516,6 +597,12 @@ async function main() {
     return;
   }
 
+  if (downloadLogicalModels && valueSetDownloader) {
+    const profileFolder = path.join(path.dirname(inputFolder), "profiles");
+    const profileValueSetCollector = new ProfileValueSetCollector(profileFolder);
+    await valueSetDownloader.downloadAll(profileValueSetCollector.getBindingValueSetCanonicals());
+  }
+
   for (const excelFile of fs.readdirSync(inputFolder, {withFileTypes: true}).filter(file => /\.(xlsx|xlsm|xls)$/i.test(file.name)).filter(file => !file.name.startsWith('~$'))) {
     const convertor = new ExcelConvertor(excelFile, targetFolders, valueSetDownloader);
     if (createRequirements) {
@@ -527,6 +614,7 @@ async function main() {
       await convertor.getLogicalModel();
     }
   }
+
 }
 
 main().catch(error => {
