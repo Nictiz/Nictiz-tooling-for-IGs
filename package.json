@@ -4,14 +4,16 @@
   "description": "Tools for working with IGs within Nictiz",
   "bin": {
     "excel-to-artifacts": "src/excel-to-artifacts.js",
-    "translate-menu": "src/translate-menu.js"
+    "translate-menu": "src/translate-menu.js",
+    "sync-obligations": "src/sync-obligations.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "xlsx": "^0.18.5",
     "commander": "^15.0.0",
+    "fhir-tool": "^5.0.2",
+    "xlsx": "^0.18.5",
     "yaml": "^2.9.0"
   }
 }
