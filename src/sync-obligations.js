@@ -570,7 +570,7 @@ class StructureDefinitionHandler {
 function parseArgs() {
     commander.program
       .requiredOption("--lm-folder <folder>", "Folder containing logical model StructureDefinitions in JSON format. Searched recursively; StructureDefinitions are indexed by canonical URL.")
-      .requiredOption("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous.concat([value]), [])
+      .requiredOption("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous ? previous.concat([value]) : [value])
       .option("--copy", "Copy matching obligation extensions from logical models to profiles and update the profile XML files in place.")
       .addOption(new commander.Option("--suppressions <file.yaml>", "Suppress known discrepancies in check mode. Cannot be used in copy mode.").conflicts("--copy"))
       .argument("<profile.xml...>", "One or more FHIR profile StructureDefinitions in XML format.")
@@ -592,10 +592,10 @@ function main() {
 
   const sdHandler = new StructureDefinitionHandler();
 
-  const lmRegistry = new LogicalModelRegistry(cliOptions.logicalModelFolder, sdHandler);
+  const lmRegistry = new LogicalModelRegistry(cliOptions.lmFolder, sdHandler);
   console.log(`Indexed ${lmRegistry.size} logical ${lmRegistry.size === 1 ? "model" : "models"}.`);
 
-  const selectedActors = new Set(cliOptions.actors.map(stripVersionFromCanonical));
+  const selectedActors = new Set(cliOptions.actor.map(stripVersionFromCanonical));
   console.log("Actors:");
   for (const actor of selectedActors) {
     console.log(`  ${actor}`);
