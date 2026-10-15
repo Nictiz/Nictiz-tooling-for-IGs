@@ -477,6 +477,7 @@ class ExcelConvertor {
         sheet: "Informatie-requirements",
         col: {
           number: "Key",
+          euOrNl: "EU of NL",
           name: "Titel",
           description: "Omschrijving",
           rationale: "Onderbouwing",
@@ -484,12 +485,14 @@ class ExcelConvertor {
           presence: "Aanwezigheid",
           context: "Context voor toepassing",
           source: "Bron",
+          derivedFrom: "Afgeleid van"
         }
       },
       en: {
         sheet: "Information requirements (ENG)",
         col: {
           number: "Key",
+          euOrNl: "EU or NL",
           name: "Title",
           description: "Description",
           rationale: "Rationale",
@@ -497,6 +500,7 @@ class ExcelConvertor {
           presence: "Presence",
           context: "Context for use",
           source: "Source",
+          derivedFrom: "Derived from"
         }
       }
     }
@@ -618,18 +622,32 @@ class ExcelConvertor {
   }
 
   convertRequirements() {
+    // Read building block code from the Concept sheet (if relevant)
+    let buildingBlockCode = null;
+    if (this.templateVersion == "v2") {
+      const structNl = ExcelConvertor.structConcept[this.templateVersion]["nl"];
+      const codeRow = this.#getRows(structNl.sheet).find(row => this.#cell(row, structNl.col.field) == structNl.key.code);
+      this.#getRows(structNl.sheet).find(row => console.log(this.#cell(row, structNl.col.field)));
+      if (!codeRow || !this.#cell(codeRow, structNl.col.description)) {
+        console.error("Building block code is not defined on the Concept sheet of the Excel file");
+        process.exit(1);
+      }
+      buildingBlockCode = this.#cell(codeRow, structNl.col.description).toUpperCase();
+    }
+
+    // Construct the resource
     const id = this.fileRoot;
     const canonical = this.canonicalBase + "/Requirements/" + id;
-
     const requirements = {
       resourceType: "Requirements",
       id: id,
       language: "nl",
       url: canonical,
       status: "active",
-      statement: this.#getStatements(canonical)
+      statement: this.#getStatements(canonical, buildingBlockCode)
     };
 
+    // Read out the file
     const outputFile = path.join(this.targetFolders.get("RequirementResources"), "Requirements-" + this.fileRoot + ".json");
     fs.writeFileSync(outputFile, JSON.stringify(requirements, null, 2), "utf8");
     console.log(`Wrote ${outputFile}`);
@@ -717,10 +735,10 @@ class ExcelConvertor {
     return value ? `**${label}**: ${value}` : null;
   }
 
-  #getStatements(canonical) {
+  #getStatements(canonical, buildingBlockCode) {
     const structNl = ExcelConvertor.structRequirements[this.templateVersion]["nl"];
     const structEn = ExcelConvertor.structRequirements[this.templateVersion]["en"];
-    const rowsNl = this.#getRows(structNl.sheet);
+    let rowsNl = this.#getRows(structNl.sheet);
     if (rowsNl == null) return;
 
     const rowsEn = structEn.sheet ? this.#getRows(structEn.sheet) : null;
@@ -730,15 +748,27 @@ class ExcelConvertor {
       const row = rowsNl[i];
       const rowEn = rowsEn ? rowsEn[i] : null;
 
-      const number = this.#cell(row, structNl.col.number);
-      if (!number) continue;
+      const key = this.#cell(row, structNl.col.number);
+      if (!key) continue;
       
-      const parentNumber = number.includes(".")
-        ? number.split(".").slice(0, -1).join(".")
-        : null;
+      let parentKey = null;
+      if (this.templateVersion == "v1" && key.includes(".")) {
+        parentKey = key.split(".").slice(0, -1).join(".");
+      } else if (this.#cell(row, structNl.col.derivedFrom)) {
+        parentKey = this.#cell(row, structNl.col.derivedFrom);
+      }
 
-      const label = this.#cell(row, structNl.col.name);
-      const labelEn = rowEn ? this.#cell(rowEn, structEn.col.name) : "";
+      let label = "";
+      let labelEn = "";
+      const title = this.#cell(row, structNl.col.name);
+      const titleEn = rowEn ? this.#cell(rowEn, structEn.col.name) : "";
+      if (this.templateVersion == "v1") {
+        label = title;
+        labelEn = titleEn;
+      } else {
+        label = this.#cell(row, structNl.col.euOrNl) + ": " + buildingBlockCode + " " + title;
+        labelEn = this.#cell(row, structNl.col.euOrNl) + ": " + buildingBlockCode + " " + (titleEn ? titleEn : title);
+      }
 
       let requirementText = "";
       if (this.templateVersion == "v1") {
@@ -759,18 +789,18 @@ class ExcelConvertor {
             valueBoolean: false
           }
         ],
-        key: number,
+        key: key,
         label: label
       }
       statement = this.#addTranslationExtension(statement, "label", "en", "string", labelEn);
       statement.requirement = requirementText;
       statement = this.#addTranslationExtension(statement, "requirement", "en", "Markdown", requirementTextEn);
 
-      if (parentNumber) {
-        statement.parent = `${canonical}#${parentNumber}`;
+      if (parentKey) {
+        statement.parent = `${canonical}#${parentKey}`;
       }
 
-      // Source gets abused a bit, as it is not truly a reference of cource
+      // Source gets abused a bit, as it is not truly a reference of course
       const source = this.#cell(row, structNl.col.source);
       if (source) {
         if (this.templateVersion == "v1") {
