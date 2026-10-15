@@ -521,7 +521,7 @@ class ExcelConvertor {
     }
   }
 
-  constructor(inputFile, targetFolders, valueSetDownloader) {
+  constructor(inputFile, targetFolders, valueSetDownloader, canonicalBase) {
     this.inputFile = inputFile;
     this.fileRoot = path.basename(inputFile.name, path.extname(inputFile.name));
     this.workbook = XLSX.readFile(path.join(inputFile.parentPath, inputFile.name));
@@ -535,6 +535,7 @@ class ExcelConvertor {
     this.sources = this.#getSources();
     this.targetFolders = targetFolders;
     this.valueSetDownloader = valueSetDownloader;
+    this.canonicalBase = canonicalBase;
   }
 
   createRequirements() {
@@ -612,7 +613,7 @@ class ExcelConvertor {
 
   convertRequirements() {
     const id = this.fileRoot;
-    const canonical = "http://ig.nictiz.nl/gbb/Requirements/" + id;
+    const canonical = this.canonicalBase + "/Requirements/" + id;
 
     const requirements = {
       resourceType: "Requirements",
@@ -883,10 +884,16 @@ function parseSushiYaml() {
     process.exit(1);
   }
 
+  let canonical = null;
   let adProject = null;
   try {
     const text = fs.readFileSync(configPath, "utf8");
     const config = YAML.parse(text);
+
+    if (!"canonical" in config) {
+      console.error("The canonical of this IG is not defined in sushi-config.yaml!");
+    }
+    canonical = config["canonical"];
 
     const igConfig = config?.["nictizIgConfig"];
 
@@ -901,7 +908,10 @@ function parseSushiYaml() {
     process.exit(1);
   }
 
-  return adProject;
+  return {
+    "canonicalBase": canonical,
+    "adProject": adProject
+  };
 }
 
 async function main() {
@@ -915,7 +925,7 @@ async function main() {
     .argument('<outputFolder>')
   commander.program.parse()
 
-  const adProject = parseSushiYaml();
+  const config = parseSushiYaml();
 
   const inputFolder = commander.program.args[0];
   const outputFolder = commander.program.args[1];
@@ -936,13 +946,13 @@ async function main() {
   const targetFolders = new TargetFolders(outputFolder);
 
   if (downloadActors) {
-    const actorDefinitionDownloader = new ActorDefinitionDownloader(adProject, targetFolders.get("Resources"));
+    const actorDefinitionDownloader = new ActorDefinitionDownloader(config.adProject, targetFolders.get("Resources"));
     await actorDefinitionDownloader.downloadAll();
   }
 
   let valueSetDownloader = null;
   if ((downloadLogicalModels || downloadArtifactsFromProfiles) && descend) {
-    valueSetDownloader = new ValueSetDownloader(adProject, targetFolders.get("Vocabulary"));
+    valueSetDownloader = new ValueSetDownloader(config.adProject, targetFolders.get("Vocabulary"));
   }
 
   if (!fs.existsSync(inputFolder)) {
@@ -950,13 +960,13 @@ async function main() {
   }
 
   for (const excelFile of fs.readdirSync(path.join(inputFolder, "requirements"), {withFileTypes: true}).filter(file => /\.(xlsx|xlsm|xls)$/i.test(file.name)).filter(file => !file.name.startsWith('~$'))) {
-    const convertor = new ExcelConvertor(excelFile, targetFolders, valueSetDownloader);
+    const convertor = new ExcelConvertor(excelFile, targetFolders, valueSetDownloader, config["canonicalBase"]);
     if (createRequirements) {
       convertor.createRequirements();
     }
 
     if (downloadLogicalModels) {
-      await convertor.getLogicalModel(adProject);
+      await convertor.getLogicalModel(config.adProject);
     }
   }
 
