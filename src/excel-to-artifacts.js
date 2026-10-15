@@ -614,9 +614,6 @@ class ExcelConvertor {
     const id = this.fileRoot;
     const canonical = "http://ig.nictiz.nl/gbb/Requirements/" + id;
 
-    const rows = this.#getRows(ExcelConvertor.sheetRequirements);
-    if (rows == null) return;
-
     const requirements = {
       resourceType: "Requirements",
       id: id,
@@ -640,7 +637,7 @@ class ExcelConvertor {
     let rows = this.#getRows(struct.sheet);
     if (rows == null) return;
     
-    rows = rows.filter(row => this.#cell(row, ExcelConvertor.colField) == ExcelConvertor.textADId);
+    rows = rows.filter(row => this.#cell(row, struct.col.field) == struct.key.ADId);
     let ad_id = "";
     if (rows.length == 1) {
       ad_id = this.#cell(rows[0], struct.col.description);
