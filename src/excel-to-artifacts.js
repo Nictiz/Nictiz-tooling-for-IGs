@@ -570,7 +570,13 @@ class ExcelConvertor {
 
     markdown += this.#convertBaseModelConsiderations(language);
 
-    const outputFile = path.join(this.targetFolders.get("PageContent"), `${this.fileRoot}-Concept-${language}.md`);
+    let outputFileName = "";
+    if (this.templateVersion == "v1") {
+      outputFileName = `${this.fileRoot}-Concept.md`;
+    } else {
+      outputFileName = `${this.fileRoot}-Concept-${language}.md`;
+    }
+    const outputFile = path.join(this.targetFolders.get("PageContent"), outputFileName);
     fs.writeFileSync(outputFile, markdown, "utf8");
     console.log(`Wrote ${outputFile}`);
   }
