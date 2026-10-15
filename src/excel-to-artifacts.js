@@ -876,25 +876,6 @@ class ExcelConvertor {
       canonicals.add(value.trim());
     }
   }
-
-  /** Get the rows from the names sheet.
-   *  The header row is assumed to be the second row, in accordance to the template.
-   *  @returns An array of JSON objects, or null if the sheet was not found.
-   */
-  #getRows(sheetName) {
-    const sheet = this.workbook.Sheets[sheetName];
-    if (!sheet) {
-      console.warn(`Skipping ${this.inputFile.name}: sheet "${sheetName}" not found`);
-      return null;
-    }
-
-    const rows = XLSX.utils.sheet_to_json(sheet, {
-      defval: "",
-      range: 1     // The header row is the second row in the template (row 1)
-    })
-
-    return rows;
-  }
 }
 
 function parseSushiYaml() {
@@ -974,8 +955,7 @@ async function main() {
   for (const excelFile of fs.readdirSync(path.join(inputFolder, "requirements"), {withFileTypes: true}).filter(file => /\.(xlsx|xlsm|xls)$/i.test(file.name)).filter(file => !file.name.startsWith('~$'))) {
     const convertor = new ExcelConvertor(excelFile, targetFolders, valueSetDownloader);
     if (createRequirements) {
-      convertor.convertRequirements();
-      convertor.convertConceptPage();
+      convertor.createRequirements();
     }
 
     if (downloadLogicalModels) {
