@@ -484,7 +484,7 @@ class ExcelConvertor {
           variability: "Variabiliteit",
           presence: "Aanwezigheid",
           context: "Context voor toepassing",
-          source: "Bron",
+          source: "Bron(nen)",
           derivedFrom: "Afgeleid van"
         }
       },
@@ -499,7 +499,7 @@ class ExcelConvertor {
           variability: "Variability",
           presence: "Presence",
           context: "Context for use",
-          source: "Source",
+          source: "Source(s)",
           derivedFrom: "Derived from"
         }
       }
@@ -627,7 +627,6 @@ class ExcelConvertor {
     if (this.templateVersion == "v2") {
       const structNl = ExcelConvertor.structConcept[this.templateVersion]["nl"];
       const codeRow = this.#getRows(structNl.sheet).find(row => this.#cell(row, structNl.col.field) == structNl.key.code);
-      this.#getRows(structNl.sheet).find(row => console.log(this.#cell(row, structNl.col.field)));
       if (!codeRow || !this.#cell(codeRow, structNl.col.description)) {
         console.error("Building block code is not defined on the Concept sheet of the Excel file");
         process.exit(1);
@@ -731,10 +730,6 @@ class ExcelConvertor {
     return String(value ?? "").trim();
   }
   
-  paragraph(label, value) {
-    return value ? `**${label}**: ${value}` : null;
-  }
-
   #getStatements(canonical, buildingBlockCode) {
     const structNl = ExcelConvertor.structRequirements[this.templateVersion]["nl"];
     const structEn = ExcelConvertor.structRequirements[this.templateVersion]["en"];
@@ -782,6 +777,11 @@ class ExcelConvertor {
         requirementTextEn = this.#createBodyText(rowEn, [structEn.col.description, structEn.col.rationale, structEn.col.variability, structEn.col.presence, structEn.col.context]);
       }
 
+      if (parentKey) {
+        requirementText += `\n\nAanscherping van [#${parentKey}](#${parentKey})`;
+        requirementTextEn += `\n\nRefinement of [#${parentKey}](#${parentKey})`;
+      }
+
       let statement = {
         extension: [
           {
@@ -806,11 +806,14 @@ class ExcelConvertor {
         if (this.templateVersion == "v1") {
           statement.source = [{ display: source }];
         } else {
-          const reference = this.sources[source];
-          statement.source = [{
-            "reference": reference.url,
-            "display": reference.name + " " + reference.version
-          }]
+          statement.source = source.split(",")
+            .map(source => {
+              const ref = this.sources[source.trim()];
+              return {
+                "reference": ref.url,
+                "display": ref.name + " " + ref.version
+              }
+            })
         }
       }   
 
@@ -823,9 +826,9 @@ class ExcelConvertor {
 
   #createBodyText(row, columns) {
     return columns
-      .map(col => this.paragraph(col, this.#cell(row, col)))
-      .filter(Boolean)
-      .join("\n\n");
+      .filter(col => this.#cell(row, col))
+      .map(col => `* *${col}*: ${this.#cell(row, col)}`)
+      .join("\n");
   }
 
   #addTranslationExtension(statement, elementName, language, dataType, value) {
