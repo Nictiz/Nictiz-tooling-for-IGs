@@ -485,7 +485,11 @@ class ExcelConvertor {
           presence: "Aanwezigheid",
           context: "Context voor toepassing",
           source: "Bron(nen)",
-          derivedFrom: "Afgeleid van"
+          derivedFrom: "Afgeleid van",
+          addressed: "Opgenomen of niet-opgenomen"
+        },
+        key: {
+          notAddressed: "Niet-opgenomen informatiebehoefte"
         }
       },
       en: {
@@ -500,7 +504,11 @@ class ExcelConvertor {
           presence: "Presence",
           context: "Context for use",
           source: "Source(s)",
-          derivedFrom: "Derived from"
+          derivedFrom: "Derived from",
+          addressed: "Included or excluded information requirement"
+        },
+        key: {
+          notAddressed: "Excluded information requirement"
         }
       }
     }
@@ -778,8 +786,13 @@ class ExcelConvertor {
       }
 
       if (parentKey) {
-        requirementText += `\n\nAanscherping van [#${parentKey}](#${parentKey})`;
-        requirementTextEn += `\n\nRefinement of [#${parentKey}](#${parentKey})`;
+        requirementText += `\n\nAanscherping van requirement [#${parentKey}](#${parentKey})`;
+        requirementTextEn += `\n\nRefinement of requirement [#${parentKey}](#${parentKey})`;
+      }
+
+      if (this.#cell(row, structNl.col.addressed) == structNl.key.notAddressed) {
+        requirementText += "\n\n**" + structNl.key.notAddressed + "**";
+        requirementTextEn += "\n\n**" + structEn.key.notAddressed + "**";
       }
 
       let statement = {
