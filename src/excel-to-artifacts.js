@@ -1023,7 +1023,7 @@ async function main() {
   }
 
   if (downloadArtifactsFromProfiles) {
-    const profileFolder = path.join(path.dirname(inputFolder), "profiles");
+    const profileFolder = path.join(inputFolder, "profiles");
     const profileValueSetCollector = new ProfileValueSetCollector(profileFolder);
     await valueSetDownloader.downloadAll(profileValueSetCollector.getBindingValueSetCanonicals());
   }
