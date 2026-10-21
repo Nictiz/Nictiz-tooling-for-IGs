@@ -212,7 +212,7 @@ class ValueSetDownloader {
         throw new Error(`Expected Bundle, got ${bundle.resourceType ?? "unknown resource"}`);
       }
       if (bundle.total < 1) {
-        console.warn(`Couldn't download ValueSet ${canonical}`);
+        console.error(`Couldn't download ValueSet ${canonical}. Bundle turned up empty for request ${this.#toDownloadUrl(canonical)}`);
         return;
       } else if (bundle.total > 1) {
         console.warn(`Multiple ValueSets are present with canonical ${canonical}. Downloading the first one.`);
