@@ -153,7 +153,8 @@ class ValueSetDownloader {
   static skippedCanonicalPrefixes = [
     "http://hl7.org",
     "http://terminology.hl7.org",
-    "http://decor.nictiz.nl"
+    "http://decor.nictiz.nl",
+    "http://terminology.ehdsi.eu"
   ];
 
   constructor(adProject, outputFolder) {
@@ -212,7 +213,7 @@ class ValueSetDownloader {
         throw new Error(`Expected Bundle, got ${bundle.resourceType ?? "unknown resource"}`);
       }
       if (bundle.total < 1) {
-        console.warn(`Couldn't download ValueSet ${canonical}`);
+        console.error(`Couldn't download ValueSet ${canonical}. Bundle turned up empty for request ${this.#toDownloadUrl(canonical)}`);
         return;
       } else if (bundle.total > 1) {
         console.warn(`Multiple ValueSets are present with canonical ${canonical}. Downloading the first one.`);
@@ -1023,7 +1024,7 @@ async function main() {
   }
 
   if (downloadArtifactsFromProfiles) {
-    const profileFolder = path.join(path.dirname(inputFolder), "profiles");
+    const profileFolder = path.join(inputFolder, "profiles");
     const profileValueSetCollector = new ProfileValueSetCollector(profileFolder);
     await valueSetDownloader.downloadAll(profileValueSetCollector.getBindingValueSetCanonicals());
   }
