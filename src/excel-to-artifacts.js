@@ -154,7 +154,8 @@ class ValueSetDownloader {
     "http://hl7.org",
     "http://terminology.hl7.org",
     "http://decor.nictiz.nl",
-    "http://terminology.ehdsi.eu"
+    "http://terminology.ehdsi.eu",
+    "https://specifications.openehr.org"
   ];
 
   constructor(adProject, outputFolder) {
