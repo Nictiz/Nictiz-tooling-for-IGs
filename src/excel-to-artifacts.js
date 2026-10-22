@@ -153,7 +153,8 @@ class ValueSetDownloader {
   static skippedCanonicalPrefixes = [
     "http://hl7.org",
     "http://terminology.hl7.org",
-    "http://decor.nictiz.nl"
+    "http://decor.nictiz.nl",
+    "http://terminology.ehdsi.eu"
   ];
 
   constructor(adProject, outputFolder) {
