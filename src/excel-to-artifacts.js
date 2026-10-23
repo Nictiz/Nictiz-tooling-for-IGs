@@ -8,6 +8,7 @@ const YAML = require("yaml");
 
 const serverSourceUrl = "https://decor.nictiz.nl";
 const translationExtensionUrl = "http://hl7.org/fhir/StructureDefinition/translation";
+const additionalBindingExtensionUrl = "http://hl7.org/fhir/tools/StructureDefinition/additional-binding";
 
 function normalizeLanguageCode(languageCode) {
   return typeof languageCode === "string" ? languageCode.slice(0, 2) : languageCode;
@@ -913,6 +914,18 @@ class ExcelConvertor {
       this.#addCanonicals(canonicals, binding.valueSetCanonical);
       this.#addCanonicals(canonicals, binding.valueSetUri);
       this.#addCanonicals(canonicals, binding.valueSetReference?.reference);
+
+      for (const extension of binding.extension ?? []) {
+        if (extension?.url !== additionalBindingExtensionUrl) continue;
+
+        for (const nestedExtension of extension.extension ?? []) {
+          if (nestedExtension?.url !== "valueSet") continue;
+
+          this.#addCanonicals(canonicals, nestedExtension.valueCanonical);
+          this.#addCanonicals(canonicals, nestedExtension.valueUri);
+          this.#addCanonicals(canonicals, nestedExtension.valueReference?.reference);
+        }
+      }
     }
 
     return Array.from(canonicals);
