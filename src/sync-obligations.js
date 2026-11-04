@@ -214,11 +214,10 @@ class LogicalModelRegistry {
   }
 }
 
-class ObligationComparator {
-  constructor(profile, logicalModelRegistry, actors, suppressions) {
+class Comparator {
+  constructor(profile, logicalModelRegistry, suppressions) {
     this.profile = profile;
     this.logicalModelRegistry = logicalModelRegistry;
-    this.actors = actors;
     this.suppressions = suppressions;
     this.mappingContexts = this.#createMappingContexts();
   }
@@ -227,23 +226,29 @@ class ObligationComparator {
     return this.mappingContexts.length > 0;
   }
 
-  copy() {
+  copy(actors) {
+    if (actors.length === 0) return;
+    actors = new Set(actors);
     // We simply copy both to the snapshot and the differential and assume
     // they are in sync. Other tools will check this.
     if (this.profile.differential) {
-      this.#copyObligations(this.profile.differential.element);
+      this.#copyObligations(this.profile.differential.element, actors);
     }
     if (this.profile.snapshot) {
-      this.#copyObligations(this.profile.snapshot.element);
+      this.#copyObligations(this.profile.snapshot.element, actors);
     }
   }
 
-  report() {
+  report(actors) {
+    if (actors.length === 0) {
+      return { discrepancyCount: 0, targetMissingCount: 0, suppressedCount: 0 };
+    }
+    actors = new Set(actors);
     if (this.profile.differential) {
-      return this.#reportDiscrepancies(this.profile.differential.element);
+      return this.#reportDiscrepancies(this.profile.differential.element, actors);
     }
     if (this.profile.snapshot) {
-      return this.#reportDiscrepancies(this.profile.snapshot.element);
+      return this.#reportDiscrepancies(this.profile.snapshot.element, actors);
     }
 
     return {
@@ -273,7 +278,7 @@ class ObligationComparator {
     return contexts;
   }
 
-  #copyObligations(elements) {
+  #copyObligations(elements, actors) {
     for (const profileElement of elements) {
       profileElement.extension ??= [];
 
@@ -283,9 +288,8 @@ class ObligationComparator {
         const targetElements = this.#resolveTargetElements(profileElement, context);
 
         for (const logicalModelElement of [...targetElements].filter(el => (el != null))) {
-          console.log(profileElement)
           for (const obligation of this.#getObligations(logicalModelElement)) {
-            if (!this.#obligationAppliesToActors(obligation)) {
+            if (!this.#obligationAppliesToActors(obligation, actors)) {
               continue;
             }
 
@@ -310,7 +314,7 @@ class ObligationComparator {
     }
   }
 
-  #reportDiscrepancies(elements) {
+  #reportDiscrepancies(elements, actors) {
     const result = {
       discrepancyCount: 0,
       targetMissingCount: 0,
@@ -325,20 +329,20 @@ class ObligationComparator {
             continue;
           }
 
-          const profileObligationsByActor = this.#getActorObligations(profileElement);
-          const modelObligationsByActor = this.#getActorObligations(logicalModelElement);
+          const profileObligationsByActor = this.#getActorObligations(profileElement, actors);
+          const modelObligationsByActor = this.#getActorObligations(logicalModelElement, actors);
 
-          for (const actor of this.actors) {
-            const profileObligations = profileObligationsByActor.get(actor);
-            const modelObligations = modelObligationsByActor.get(actor);
+          for (const actor of actors) {
+            const profileValues = profileObligationsByActor.get(actor);
+            const modelValues = modelObligationsByActor.get(actor);
 
             let discrepancyType;
 
-            if (modelObligations.present && !profileObligations.present) {
+            if (modelValues.present && !profileValues.present) {
               discrepancyType = "missing-in-profile";
-            } else if (!modelObligations.present && profileObligations.present) {
+            } else if (!modelValues.present && profileValues.present) {
               discrepancyType = "missing-in-model";
-            } else if (modelObligations.present && profileObligations.present && !this.#setsAreEqual(modelObligations.codes, profileObligations.codes)) {
+            } else if (modelValues.present && profileValues.present && !this.#setsAreEqual(modelValues.codes, profileValues.codes)) {
               discrepancyType = "different-codes";
             }
             if (!discrepancyType) continue;
@@ -351,7 +355,7 @@ class ObligationComparator {
             }
 
             result.discrepancyCount += 1;
-            this.#reportDiscrepancy(discrepancyType, profileElement, logicalModelElement, context, actor, modelObligations.codes, profileObligations.codes);
+            this.#reportDiscrepancy(discrepancyType, profileElement, logicalModelElement, context, actor, modelValues.codes, profileValues.codes);
           }
         }
       }
@@ -444,8 +448,7 @@ class ObligationComparator {
   }
 
   #getObligations(element) {
-    return (element.extension ?? [])
-      .filter(extension => extension.url === OBLIGATION_URL);
+    return (element.extension ?? []).filter(extension => extension.url === OBLIGATION_URL);
   }
 
   #getObligationActors(obligation) {
@@ -460,7 +463,7 @@ class ObligationComparator {
       .map(extension => extension.valueCode);
   }
 
-  #obligationAppliesToActors(obligation) {
+  #obligationAppliesToActors(obligation, actors) {
     const obligationActors = this.#getObligationActors(obligation);
 
     // Obligations without an actor are deliberately excluded.
@@ -468,13 +471,13 @@ class ObligationComparator {
       return false;
     }
 
-    return obligationActors.some(actor => this.actors.has(actor));
+    return obligationActors.some(actor => actors.has(actor));
   }
 
-  #getActorObligations(element) {
+  #getActorObligations(element, actors) {
     const obligationsByActor = new Map();
 
-    for (const actor of this.actors) {
+    for (const actor of actors) {
       obligationsByActor.set(actor, {
         present: false,
         codes: new Set(),
@@ -486,7 +489,7 @@ class ObligationComparator {
       const obligationCodes = this.#getObligationCodes(obligation);
 
       for (const actor of obligationActors) {
-        if (!this.actors.has(actor)) {
+        if (!actors.has(actor)) {
           continue;
         }
 
@@ -570,7 +573,7 @@ class StructureDefinitionHandler {
 function parseArgs() {
     commander.program
       .requiredOption("--lm-folder <folder>", "Folder containing logical model StructureDefinitions in JSON format. Searched recursively; StructureDefinitions are indexed by canonical URL.")
-      .requiredOption("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous ? previous.concat([value]) : [value])
+      .option("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous ? previous.concat([value]) : [value])
       .option("--copy", "Copy matching obligation extensions from logical models to profiles and update the profile XML files in place.")
       .addOption(new commander.Option("--suppressions <file.yaml>", "Suppress known discrepancies in check mode. Cannot be used in copy mode.").conflicts("--copy"))
       .argument("<profile.xml...>", "One or more FHIR profile StructureDefinitions in XML format.")
@@ -591,11 +594,10 @@ function main() {
   const profiles = cliParser.args;
 
   const sdHandler = new StructureDefinitionHandler();
-
   const lmRegistry = new LogicalModelRegistry(cliOptions.lmFolder, sdHandler);
   console.log(`Indexed ${lmRegistry.size} logical ${lmRegistry.size === 1 ? "model" : "models"}.`);
 
-  const selectedActors = new Set(cliOptions.actor.map(stripVersionFromCanonical));
+  const selectedActors = cliOptions.actor.map(stripVersionFromCanonical);
   console.log("Actors:");
   for (const actor of selectedActors) {
     console.log(`  ${actor}`);
@@ -611,7 +613,7 @@ function main() {
 
   for (const profileFilename of profiles) {
     const profile = sdHandler.readXML(profileFilename);
-    const comparator = new ObligationComparator(profile, lmRegistry, selectedActors, suppressions);
+    const comparator = new Comparator(profile, lmRegistry, suppressions);
 
     console.log();
     console.log(`Profile: ${profile.id} (${path.resolve(profileFilename)})`);
@@ -625,14 +627,14 @@ function main() {
 
     if (cliOptions.copy) {
       console.log("  Mode: copy");
-      comparator.copy();
+      comparator.copy(selectedActors);
       sdHandler.writeXML(comparator.profile, profileFilename);
       console.log(`  Updated: ${path.resolve(profileFilename)}`);
       continue;
     }
 
     console.log("  Mode: report");
-    const result = comparator.report();
+    const result = comparator.report(selectedActors);
     totalDiscrepancyCount += result.discrepancyCount;
     totalTargetMissingCount += result.targetMissingCount;
     totalSuppressedCount += result.suppressedCount;
