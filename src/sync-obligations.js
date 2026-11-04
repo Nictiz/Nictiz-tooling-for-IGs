@@ -226,29 +226,29 @@ class Comparator {
     return this.mappingContexts.length > 0;
   }
 
-  copy(actors) {
+  copy(actors, card = false) {
     if (actors.length === 0) return;
     actors = new Set(actors);
     // We simply copy both to the snapshot and the differential and assume
     // they are in sync. Other tools will check this.
     if (this.profile.differential) {
-      this.#copyObligations(this.profile.differential.element, actors);
+      this.#copy(this.profile.differential.element, actors, card);
     }
     if (this.profile.snapshot) {
-      this.#copyObligations(this.profile.snapshot.element, actors);
+      this.#copy(this.profile.snapshot.element, actors, card);
     }
   }
 
-  report(actors) {
+  report(actors, card = false) {
     if (actors.length === 0) {
       return { discrepancyCount: 0, targetMissingCount: 0, suppressedCount: 0 };
     }
     actors = new Set(actors);
     if (this.profile.differential) {
-      return this.#reportDiscrepancies(this.profile.differential.element, actors);
+      return this.#reportDiscrepancies(this.profile.differential.element, actors, card);
     }
     if (this.profile.snapshot) {
-      return this.#reportDiscrepancies(this.profile.snapshot.element, actors);
+      return this.#reportDiscrepancies(this.profile.snapshot.element, actors, card);
     }
 
     return {
@@ -278,7 +278,7 @@ class Comparator {
     return contexts;
   }
 
-  #copyObligations(elements, actors) {
+  #copy(elements, actors, card) {
     for (const profileElement of elements) {
       profileElement.extension ??= [];
 
@@ -288,6 +288,10 @@ class Comparator {
         const targetElements = this.#resolveTargetElements(profileElement, context);
 
         for (const logicalModelElement of [...targetElements].filter(el => (el != null))) {
+          if (card) {
+            this.#copyCardinality(profileElement, logicalModelElement);
+          }
+
           for (const obligation of this.#getObligations(logicalModelElement)) {
             if (!this.#obligationAppliesToActors(obligation, actors)) {
               continue;
@@ -314,7 +318,7 @@ class Comparator {
     }
   }
 
-  #reportDiscrepancies(elements, actors) {
+  #reportDiscrepancies(elements, actors, card) {
     const result = {
       discrepancyCount: 0,
       targetMissingCount: 0,
@@ -327,6 +331,10 @@ class Comparator {
           if (logicalModelElement == null) {
             result.targetMissingCount += 1;
             continue;
+          }
+
+          if (card) {
+            this.#reportCardinality(profileElement, logicalModelElement, context, result);
           }
 
           const profileObligationsByActor = this.#getActorObligations(profileElement, actors);
@@ -362,6 +370,33 @@ class Comparator {
     }
 
     return result;
+  }
+
+  #copyCardinality(profileElement, logicalModelElement) {
+    for (const property of ["min", "max"]) {
+      if (logicalModelElement[property] !== undefined) {
+        profileElement[property] = logicalModelElement[property];
+      }
+    }
+    console.log(`Copied cardinality from ${logicalModelElement.path} to ${profileElement.path ?? profileElement.id}`);
+  }
+
+  #reportCardinality(profileElement, logicalModelElement, context, result) {
+    for (const property of ["min", "max"]) {
+      if (logicalModelElement[property] === undefined || profileElement[property] === logicalModelElement[property]) {
+        continue;
+      }
+
+      result.discrepancyCount += 1;
+      console.log();
+      console.log(`CARDINALITY ${property.toUpperCase()} DIFFERS`);
+      console.log(`  Profile: ${this.profile.id}`);
+      console.log(`  Profile element: ${profileElement.path ?? profileElement.id}`);
+      console.log(`  Logical model: ${context.logicalModel.url}`);
+      console.log(`  Logical model element: ${logicalModelElement.path ?? logicalModelElement.id}`);
+      console.log(`  Logical model ${property}: ${logicalModelElement[property]}`);
+      console.log(`  Profile ${property}: ${profileElement[property] ?? "(not set)"}`);
+    }
   }
 
   #reportDiscrepancy(type, profileElement, logicalModelElement, context, actor, modelCodes, profileCodes) {
