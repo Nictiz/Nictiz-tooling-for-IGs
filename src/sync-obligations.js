@@ -609,6 +609,7 @@ function parseArgs() {
     commander.program
       .requiredOption("--lm-folder <folder>", "Folder containing logical model StructureDefinitions in JSON format. Searched recursively; StructureDefinitions are indexed by canonical URL.")
       .option("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous ? previous.concat([value]) : [value])
+      .option("--card", "Compare or copy the min and max cardinality of mapped elements.")
       .option("--copy", "Copy matching obligation extensions from logical models to profiles and update the profile XML files in place.")
       .addOption(new commander.Option("--suppressions <file.yaml>", "Suppress known discrepancies in check mode. Cannot be used in copy mode.").conflicts("--copy"))
       .argument("<profile.xml...>", "One or more FHIR profile StructureDefinitions in XML format.")
@@ -662,14 +663,14 @@ function main() {
 
     if (cliOptions.copy) {
       console.log("  Mode: copy");
-      comparator.copy(selectedActors);
+      comparator.copy(selectedActors, cliOptions.card);
       sdHandler.writeXML(comparator.profile, profileFilename);
       console.log(`  Updated: ${path.resolve(profileFilename)}`);
       continue;
     }
 
     console.log("  Mode: report");
-    const result = comparator.report(selectedActors);
+    const result = comparator.report(selectedActors, cliOptions.card);
     totalDiscrepancyCount += result.discrepancyCount;
     totalTargetMissingCount += result.targetMissingCount;
     totalSuppressedCount += result.suppressedCount;
