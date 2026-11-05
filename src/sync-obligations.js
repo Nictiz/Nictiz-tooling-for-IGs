@@ -12,6 +12,12 @@ const SUPPRESSION_KEYS = Object.freeze({
   OBLIGATIONS_FOR_ACTOR: "obligations for actor",
   CARDINALITY: "cardinality",
   BINDING: "binding",
+  ADDITIONAL_BINDINGS: "additional bindings",
+});
+const ADDITIONAL_BINDING_SUPPRESSIONS = Object.freeze({
+  MISSING: "missing",
+  EXTRA: "extra",
+  DIFFERING: "differing",
 });
 
 const YAML_FORMAT = `
@@ -29,6 +35,13 @@ const YAML_FORMAT = `
           valueSet: "https://example.org/profile-vs instead of https://example.org/model-vs"
           strength: "preferred instead of required"
         reason: [explanation for the binding mismatch]
+      - ${SUPPRESSION_KEYS.ADDITIONAL_BINDINGS}:
+          - ${ADDITIONAL_BINDING_SUPPRESSIONS.MISSING}: "https://example.org/missing-vs"
+            reason: [explanation for the missing additional binding]
+          - ${ADDITIONAL_BINDING_SUPPRESSIONS.EXTRA}: "https://example.org/extra-vs"
+            reason: [explanation for the extra additional binding]
+          - ${ADDITIONAL_BINDING_SUPPRESSIONS.DIFFERING}: "https://example.org/differing-vs"
+            reason: [explanation for the differing additional binding]
 ...
 `;
 
@@ -93,7 +106,8 @@ class Suppressions {
           }
 
           const reason = entry.get("reason");
-          if (typeof reason !== "string" || !reason.trim()) {
+          if (selectors.some(selector => selector.key.value !== SUPPRESSION_KEYS.ADDITIONAL_BINDINGS) &&
+              (typeof reason !== "string" || !reason.trim())) {
             throw new Error(`The suppression reason for path "${profilePath}" must be provided as a string:\n${YAML_FORMAT}`);
           }
           for (const selector of selectors) {
@@ -114,7 +128,7 @@ class Suppressions {
             }
             if (key === SUPPRESSION_KEYS.BINDING) {
               if (!isMap(value) || value.items.length === 0) {
-                throw new Error(`"${SUPPRESSION_KEYS.BINDING}" for path "${profilePath}" must contain valueSet and/or strength:\n${YAML_FORMAT}`);
+                throw new Error(`"${SUPPRESSION_KEYS.BINDING}" for path "${profilePath}" must contain binding suppression options:\n${YAML_FORMAT}`);
               }
               const binding = {};
               for (const part of value.items) {
@@ -130,6 +144,25 @@ class Suppressions {
                 binding[property] = parts.map(part => part.trim()).join(" instead of ");
               }
               value = binding;
+            }
+            if (key === SUPPRESSION_KEYS.ADDITIONAL_BINDINGS) {
+              if (!isSeq(value) || value.items.length === 0) {
+                throw new Error(`"${key}" for path "${profilePath}" must be a non-empty list of exceptions:\n${YAML_FORMAT}`);
+              }
+              const additionalBindings = [];
+              for (const exception of value.items) {
+                const options = isMap(exception) ? exception.items.filter(pair => pair.key.value !== "reason") : [];
+                const property = options[0]?.key.value;
+                const expected = isMap(exception) ? exception.get(property) : undefined;
+                const exceptionReason = isMap(exception) ? exception.get("reason") : undefined;
+                if (options.length !== 1 || !Object.values(ADDITIONAL_BINDING_SUPPRESSIONS).includes(property) ||
+                    typeof expected !== "string" || !expected.trim() ||
+                    typeof exceptionReason !== "string" || !exceptionReason.trim()) {
+                  throw new Error(`Each additional binding exception for path "${profilePath}" must contain one of missing, extra, or differing with a valueSet canonical, and a reason:\n${YAML_FORMAT}`);
+                }
+                additionalBindings.push({ [property]: expected.trim(), reason: exceptionReason });
+              }
+              value = additionalBindings;
             }
             if (!checks.has(key)) checks.set(key, new Map());
             checks.get(key).set(canonicalJson(value), reason);
@@ -486,12 +519,37 @@ class Comparator {
       console.log(`  - BINDING ${property.toUpperCase()}: ${logicalModelElement.path} in logical model has ${modelValue ?? ""}, ${profileElement.path ?? profileElement.id} in profile has ${profileValue ?? ""}`);
     }
 
+    this.#reportAdditionalBindings(profileElement, logicalModelElement, result);
+  }
+
+  #reportAdditionalBindings(profileElement, logicalModelElement, result) {
     const profileBindings = this.#getAdditionalBindingsByValueSet(profileElement);
     const modelBindings = this.#getAdditionalBindingsByValueSet(logicalModelElement);
-    for (const valueSet of new Set([...modelBindings.keys(), ...profileBindings.keys()])) {
+    const suppressions = this.suppressions
+      .getValues(this.profile.id, profileElement.path, SUPPRESSION_KEYS.ADDITIONAL_BINDINGS)
+      .flatMap(exceptions => exceptions.flatMap(exception => Object.entries(exception).filter(([key]) => key !== "reason")));
+    
+    for (const valueSet of new Set([...modelBindings.keys(), ...profileBindings.keys(), ...suppressions.map(([, value]) => value)])) {
       const profileValues = profileBindings.get(valueSet);
       const modelValues = modelBindings.get(valueSet);
-      let message;
+      let mismatch;
+      if (modelValues && !profileValues) mismatch = ADDITIONAL_BINDING_SUPPRESSIONS.MISSING;
+      else if (profileValues && !modelValues) mismatch = ADDITIONAL_BINDING_SUPPRESSIONS.EXTRA;
+      else if (profileValues && modelValues && canonicalJson(profileValues) !== canonicalJson(modelValues)) {
+        mismatch = ADDITIONAL_BINDING_SUPPRESSIONS.DIFFERING;
+      }
+      const expectedTypes = suppressions.filter(([, value]) => value === valueSet).map(([key]) => key);
+      if (expectedTypes.some(expected => expected !== mismatch)) {
+        result.discrepancyCount += 1;
+        console.error(`  - ADDITIONAL BINDING SUPPRESSION OUT OF SYNC: ${profileElement.path ?? profileElement.id} for ${valueSet} specifies ${expectedTypes.join(", ")}, but found ${mismatch ?? "no mismatch"}`);
+        continue;
+      }
+      if (mismatch && expectedTypes.length > 0) {
+        result.suppressedCount += 1;
+        continue;
+      }
+      if (!mismatch) continue;
+
       if (!profileValues) {
         console.log(`  - ADDITIONAL BINDING: ${logicalModelElement.path} in the logical model defines an additional binding for ${valueSet}, but ${profileElement.id} in the profile doesn't`);
       } else if (!modelValues) {
