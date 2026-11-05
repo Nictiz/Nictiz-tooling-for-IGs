@@ -11,6 +11,7 @@ const ADDITIONAL_BINDING_URL = "http://hl7.org/fhir/tools/StructureDefinition/ad
 const SUPPRESSION_KEYS = Object.freeze({
   OBLIGATIONS_FOR_ACTOR: "obligations for actor",
   CARDINALITY: "cardinality",
+  BINDING: "binding",
 });
 
 const YAML_FORMAT = `
@@ -24,6 +25,10 @@ const YAML_FORMAT = `
         reason: [explanation for the mismatch]
       - ${SUPPRESSION_KEYS.CARDINALITY}: "0..1 instead of 0..*"
         reason: [explanation for the cardinality mismatch]
+      - ${SUPPRESSION_KEYS.BINDING}:
+          valueSet: "https://example.org/profile-vs instead of https://example.org/model-vs"
+          strength: "preferred instead of required"
+        reason: [explanation for the binding mismatch]
 ...
 `;
 
@@ -106,6 +111,25 @@ class Suppressions {
                 throw new Error(`"${SUPPRESSION_KEYS.CARDINALITY}" for path "${profilePath}" must use "profileMin..profileMax instead of modelMin..modelMax":\n${YAML_FORMAT}`);
               }
               value = `${match[1]} instead of ${match[2]}`;
+            }
+            if (key === SUPPRESSION_KEYS.BINDING) {
+              if (!isMap(value) || value.items.length === 0) {
+                throw new Error(`"${SUPPRESSION_KEYS.BINDING}" for path "${profilePath}" must contain valueSet and/or strength:\n${YAML_FORMAT}`);
+              }
+              const binding = {};
+              for (const part of value.items) {
+                const property = part.key.value;
+                const expected = value.get(property);
+                if (!["valueSet", "strength"].includes(property) || typeof expected !== "string" || !expected.includes(" instead of ")) {
+                  throw new Error(`Binding suppressions for path "${profilePath}" must use valueSet or strength with "profile value instead of model value":\n${YAML_FORMAT}`);
+                }
+                const parts = expected.split(" instead of ");
+                if (parts.length !== 2) {
+                  throw new Error(`Invalid binding suppression for path "${profilePath}": ${expected}`);
+                }
+                binding[property] = parts.map(part => part.trim()).join(" instead of ");
+              }
+              value = binding;
             }
             if (!checks.has(key)) checks.set(key, new Map());
             checks.get(key).set(canonicalJson(value), reason);
@@ -439,10 +463,24 @@ class Comparator {
   }
 
   #reportBinding(profileElement, logicalModelElement, result) {
+    const suppressions = this.suppressions.getValues(this.profile.id, profileElement.path, SUPPRESSION_KEYS.BINDING);
     for (const property of ["strength", "valueSet"]) {
       const profileValue = profileElement.binding?.[property];
       const modelValue = logicalModelElement.binding?.[property];
+      const actual = `${profileValue ?? ""} instead of ${modelValue ?? ""}`;
+      const expectedValues = suppressions.filter(binding => Object.hasOwn(binding, property))
+        .map(binding => binding[property]);
+      const staleValues = expectedValues.filter(expected => expected !== actual);
+      if (staleValues.length > 0) {
+        result.discrepancyCount += 1;
+        console.error(`  - BINDING ${property.toUpperCase()} SUPPRESSION OUT OF SYNC: ${profileElement.path ?? profileElement.id} specifies ${staleValues.join("; ")}, but found ${actual}`);
+        continue;
+      }
       if (profileValue === modelValue) continue;
+      if (expectedValues.length > 0) {
+        result.suppressedCount += 1;
+        continue;
+      }
 
       result.discrepancyCount += 1;
       console.log(`  - BINDING ${property.toUpperCase()}: ${logicalModelElement.path} in logical model has ${modelValue ?? ""}, ${profileElement.path ?? profileElement.id} in profile has ${profileValue ?? ""}`);
