@@ -390,8 +390,6 @@ class Comparator {
   }
 
   #reportObligations(type, profileElement, logicalModelElement, actor, modelCodes, profileCodes) {
-    console.log();
-
     switch (type) {
       case "missing-in-profile":
         console.log(`  - OBLIGATION MISSING IN PROFILE: ${logicalModelElement.path} in logical model has an obligation for actor ${actor} that is missing on ${profileElement.id} in the profile`);
