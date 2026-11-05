@@ -7,6 +7,7 @@ const { Fhir } = require("fhir-tool");
 const { parseAllDocuments, isMap, isSeq } = require("yaml");
 
 const OBLIGATION_URL = "http://hl7.org/fhir/StructureDefinition/obligation";
+const ADDITIONAL_BINDING_URL = "http://hl7.org/fhir/tools/StructureDefinition/additional-binding";
 
 const YAML_FORMAT = `
 ...
@@ -375,6 +376,18 @@ class Comparator {
         profileElement.binding[property] = logicalModelElement.binding[property];
       }
     }
+    const additionalBindings = this.#getAdditionalBindings(logicalModelElement);
+    if (additionalBindings.length > 0 || this.#getAdditionalBindings(profileElement).length > 0) {
+      profileElement.binding ??= {};
+      const otherExtensions = (profileElement.binding.extension ?? [])
+        .filter(extension => extension.url !== ADDITIONAL_BINDING_URL);
+      const extensions = [...otherExtensions, ...structuredClone(additionalBindings)];
+      if (extensions.length > 0) {
+        profileElement.binding.extension = extensions;
+      } else {
+        delete profileElement.binding.extension;
+      }
+    }
     if (logicalModelElement.binding) {
       console.log(`Copied binding from ${logicalModelElement.path} to ${profileElement.path ?? profileElement.id}`);
     }
@@ -389,6 +402,52 @@ class Comparator {
       result.discrepancyCount += 1;
       console.log(`  - BINDING ${property.toUpperCase()}: ${logicalModelElement.path} in logical model has ${modelValue ?? ""}, ${profileElement.path ?? profileElement.id} in profile has ${profileValue ?? ""}`);
     }
+
+    const profileBindings = this.#getAdditionalBindingsByValueSet(profileElement);
+    const modelBindings = this.#getAdditionalBindingsByValueSet(logicalModelElement);
+    for (const valueSet of new Set([...modelBindings.keys(), ...profileBindings.keys()])) {
+      const profileValues = profileBindings.get(valueSet);
+      const modelValues = modelBindings.get(valueSet);
+      let message;
+      if (!profileValues) {
+        console.log(`  - ADDITIONAL BINDING: ${logicalModelElement.path} in the logical model defines an additional binding for ${valueSet}, but ${profileElement.id} in the profile doesn't`);
+      } else if (!modelValues) {
+        console.log(`  - ADDITIONAL BINDING: ${logicalModelElement.path} in the logical model doesn't define an additional binding for ${valueSet}, but ${profileElement.id} in the profile does`);
+      } else if (canonicalJson(profileValues) !== canonicalJson(modelValues)) {
+        console.log(`-  ADDITIONAL BINDING: ${logicalModelElement.path} in the logical model defines an additional binding for ${valueSet}, but with different properties than ${profileElement.id} in the profile`);
+      } else {
+        continue;
+      }
+
+      result.discrepancyCount += 1;
+    }
+  }
+
+  #getAdditionalBindingsByValueSet(element) {
+    const bindings = new Map();
+    for (const extension of this.#getAdditionalBindings(element)) {
+      const valueSet = extension.extension?.find(part => part.url === "valueSet")?.valueCanonical ?? "";
+      if (!bindings.has(valueSet)) bindings.set(valueSet, []);
+      bindings.get(valueSet).push(this.#canonicalBinding(extension));
+    }
+    for (const values of bindings.values()) values.sort();
+    return bindings;
+  }
+
+  #getAdditionalBindings(element) {
+    return (element.binding?.extension ?? [])
+      .filter(extension => extension.url === ADDITIONAL_BINDING_URL);
+  }
+
+  #canonicalBinding(value) {
+    if (Array.isArray(value)) {
+      return `[${value.map(item => this.#canonicalBinding(item)).sort().join(",")}]`;
+    }
+    if (value !== null && typeof value === "object") {
+      return `{${Object.keys(value).sort()
+        .map(key => `${JSON.stringify(key)}:${this.#canonicalBinding(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
   }
 
   #reportObligations(profileElement, logicalModelElement, actors, result) {
@@ -603,7 +662,7 @@ function parseArgs() {
       .requiredOption("--lm-folder <folder>", "Folder containing logical model StructureDefinitions in JSON format. Searched recursively; StructureDefinitions are indexed by canonical URL.")
       .option("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous ? previous.concat([value]) : [value])
       .option("--card", "Compare or copy the min and max cardinality of mapped elements.")
-      .option("--bindings", "Compare or copy the binding strength and valueSet of mapped elements.")
+      .option("--bindings", "Compare or copy binding strength, valueSet, and additional-binding extensions of mapped elements.")
       .option("--copy", "Copy matching obligation extensions and selected cardinality and binding properties from logical models to profiles and update the profile XML files in place.")
       .addOption(new commander.Option("--suppressions <file.yaml>", "Suppress known discrepancies in check mode. Cannot be used in copy mode.").conflicts("--copy"))
       .argument("<profile.xml...>", "One or more FHIR profile StructureDefinitions in XML format.")
