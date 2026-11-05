@@ -226,25 +226,25 @@ class Comparator {
     return this.mappingContexts.length > 0;
   }
 
-  copy(actors, card = false) {
+  copy(actors, card = false, bindings = false) {
     actors = new Set(actors);
     // We simply copy both to the snapshot and the differential and assume
     // they are in sync. Other tools will check this.
     if (this.profile.differential) {
-      this.#copy(this.profile.differential.element, actors, card);
+      this.#copy(this.profile.differential.element, actors, card, bindings);
     }
     if (this.profile.snapshot) {
-      this.#copy(this.profile.snapshot.element, actors, card);
+      this.#copy(this.profile.snapshot.element, actors, card, bindings);
     }
   }
 
-  report(actors, card = false) {
+  report(actors, card = false, bindings = false) {
     actors = new Set(actors);
     if (this.profile.differential) {
-      return this.#reportDiscrepancies(this.profile.differential.element, actors, card);
+      return this.#reportDiscrepancies(this.profile.differential.element, actors, card, bindings);
     }
     if (this.profile.snapshot) {
-      return this.#reportDiscrepancies(this.profile.snapshot.element, actors, card);
+      return this.#reportDiscrepancies(this.profile.snapshot.element, actors, card, bindings);
     }
 
     return {
@@ -274,7 +274,7 @@ class Comparator {
     return contexts;
   }
 
-  #copy(elements, actors, card) {
+  #copy(elements, actors, card, bindings) {
     for (const profileElement of elements) {
       profileElement.extension ??= [];
 
@@ -286,6 +286,9 @@ class Comparator {
         for (const logicalModelElement of [...targetElements].filter(el => (el != null))) {
           if (card) {
             this.#copyCardinality(profileElement, logicalModelElement);
+          }
+          if (bindings) {
+            this.#copyBinding(profileElement, logicalModelElement);
           }
 
           for (const obligation of this.#getObligations(logicalModelElement)) {
@@ -314,7 +317,7 @@ class Comparator {
     }
   }
 
-  #reportDiscrepancies(elements, actors, card) {
+  #reportDiscrepancies(elements, actors, card, bindings) {
     const result = {
       discrepancyCount: 0,
       targetMissingCount: 0,
@@ -331,6 +334,9 @@ class Comparator {
 
           if (card) {
             this.#reportCardinality(profileElement, logicalModelElement, result);
+          }
+          if (bindings) {
+            this.#reportBinding(profileElement, logicalModelElement, result);
           }
 
           this.#reportObligations(profileElement, logicalModelElement, actors, result);
@@ -360,6 +366,29 @@ class Comparator {
 
     result.discrepancyCount += 1;
     console.log(`  - CARDINALITY: ${logicalModelElement.path} in logical model has ${logicalModelCardinality}, ${profileElement.id} in profile has cardinality ${profileCardinality}`);
+  }
+
+  #copyBinding(profileElement, logicalModelElement) {
+    for (const property of ["strength", "valueSet"]) {
+      if (logicalModelElement.binding?.[property] !== undefined) {
+        profileElement.binding ??= {};
+        profileElement.binding[property] = logicalModelElement.binding[property];
+      }
+    }
+    if (logicalModelElement.binding) {
+      console.log(`Copied binding from ${logicalModelElement.path} to ${profileElement.path ?? profileElement.id}`);
+    }
+  }
+
+  #reportBinding(profileElement, logicalModelElement, result) {
+    for (const property of ["strength", "valueSet"]) {
+      const profileValue = profileElement.binding?.[property];
+      const modelValue = logicalModelElement.binding?.[property];
+      if (profileValue === modelValue) continue;
+
+      result.discrepancyCount += 1;
+      console.log(`  - BINDING ${property.toUpperCase()}: ${logicalModelElement.path} in logical model has ${modelValue ?? ""}, ${profileElement.path ?? profileElement.id} in profile has ${profileValue ?? ""}`);
+    }
   }
 
   #reportObligations(profileElement, logicalModelElement, actors, result) {
@@ -574,7 +603,8 @@ function parseArgs() {
       .requiredOption("--lm-folder <folder>", "Folder containing logical model StructureDefinitions in JSON format. Searched recursively; StructureDefinitions are indexed by canonical URL.")
       .option("--actor <canonical>", "ActorDefinition canonical to check. Repeat this option to check multiple actors. Canonical versions are ignored; obligations without an actor are ignored.", (value, previous) => previous ? previous.concat([value]) : [value])
       .option("--card", "Compare or copy the min and max cardinality of mapped elements.")
-      .option("--copy", "Copy matching obligation extensions from logical models to profiles and update the profile XML files in place.")
+      .option("--bindings", "Compare or copy the binding strength and valueSet of mapped elements.")
+      .option("--copy", "Copy matching obligation extensions and selected cardinality and binding properties from logical models to profiles and update the profile XML files in place.")
       .addOption(new commander.Option("--suppressions <file.yaml>", "Suppress known discrepancies in check mode. Cannot be used in copy mode.").conflicts("--copy"))
       .argument("<profile.xml...>", "One or more FHIR profile StructureDefinitions in XML format.")
       .addHelpText("after", `
@@ -634,13 +664,13 @@ function main() {
     processedProfileCount += 1;
 
     if (cliOptions.copy) {
-      comparator.copy(selectedActors, cliOptions.card);
+      comparator.copy(selectedActors, cliOptions.card, cliOptions.bindings);
       sdHandler.writeXML(comparator.profile, profileFilename);
       console.log(`  Updated: ${path.resolve(profileFilename)}`);
       continue;
     }
 
-    const result = comparator.report(selectedActors, cliOptions.card);
+    const result = comparator.report(selectedActors, cliOptions.card, cliOptions.bindings);
     totalDiscrepancyCount += result.discrepancyCount;
     totalTargetMissingCount += result.targetMissingCount;
     totalSuppressedCount += result.suppressedCount;
