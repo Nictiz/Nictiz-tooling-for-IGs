@@ -10,6 +10,7 @@ const OBLIGATION_URL = "http://hl7.org/fhir/StructureDefinition/obligation";
 const ADDITIONAL_BINDING_URL = "http://hl7.org/fhir/tools/StructureDefinition/additional-binding";
 const SUPPRESSION_KEYS = Object.freeze({
   OBLIGATIONS_FOR_ACTOR: "obligations for actor",
+  CARDINALITY: "cardinality",
 });
 
 const YAML_FORMAT = `
@@ -21,6 +22,8 @@ const YAML_FORMAT = `
         reason: [explanation for the mismatch]
       - ${SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR}: [canonical url for another actor that doesn't match]
         reason: [explanation for the mismatch]
+      - ${SUPPRESSION_KEYS.CARDINALITY}: "0..1 instead of 0..*"
+        reason: [explanation for the cardinality mismatch]
 ...
 `;
 
@@ -97,6 +100,13 @@ class Suppressions {
               }
               value = stripVersionFromCanonical(value);
             }
+            if (key === SUPPRESSION_KEYS.CARDINALITY) {
+              const match = typeof value === "string" && value.match(/^(\d*\.\.(?:\d+|\*)?)\s+instead of\s+(\d*\.\.(?:\d+|\*)?)$/);
+              if (!match) {
+                throw new Error(`"${SUPPRESSION_KEYS.CARDINALITY}" for path "${profilePath}" must use "profileMin..profileMax instead of modelMin..modelMax":\n${YAML_FORMAT}`);
+              }
+              value = `${match[1]} instead of ${match[2]}`;
+            }
             if (!checks.has(key)) checks.set(key, new Map());
             checks.get(key).set(canonicalJson(value), reason);
           }
@@ -110,6 +120,11 @@ class Suppressions {
   get(profileId, profilePath, check, value) {
     if (check === SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR) value = stripVersionFromCanonical(value);
     return this.#suppressions.get(profileId)?.get(profilePath)?.get(check)?.get(canonicalJson(value));
+  }
+
+  getValues(profileId, profilePath, check) {
+    const entries = this.#suppressions.get(profileId)?.get(profilePath)?.get(check);
+    return entries ? [...entries.keys()].map(value => JSON.parse(value)) : [];
   }
 }
 
@@ -378,8 +393,20 @@ class Comparator {
   #reportCardinality(profileElement, logicalModelElement, result) {
     const profileCardinality = `${profileElement.min ?? ""}..${profileElement.max ?? ""}`;
     const logicalModelCardinality = `${logicalModelElement.min ?? ""}..${logicalModelElement.max ?? ""}`;
+    const actual = `${profileCardinality} instead of ${logicalModelCardinality}`;
+    const suppressions = this.suppressions.getValues(this.profile.id, profileElement.path, SUPPRESSION_KEYS.CARDINALITY);
+    const staleSuppressions = suppressions.filter(expected => expected !== actual);
+    if (staleSuppressions.length > 0) {
+      result.discrepancyCount += 1;
+      console.error(`  - CARDINALITY SUPPRESSION OUT OF SYNC: ${profileElement.path ?? profileElement.id} specifies ${staleSuppressions.join("; ")}, but found ${actual}`);
+      return;
+    }
 
     if (profileCardinality === logicalModelCardinality) {
+      return;
+    }
+    if (suppressions.length > 0) {
+      result.suppressedCount += 1;
       return;
     }
 
@@ -718,7 +745,7 @@ function main() {
     }
   }
 
-  const suppressions = new Suppressions(cliOptions.suppressionsFilename);
+  const suppressions = new Suppressions(cliOptions.suppressions);
 
   let totalDiscrepancyCount = 0;
   let totalTargetMissingCount = 0;
