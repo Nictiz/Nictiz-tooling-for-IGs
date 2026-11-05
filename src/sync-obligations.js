@@ -227,7 +227,6 @@ class Comparator {
   }
 
   copy(actors, card = false) {
-    if (actors.length === 0) return;
     actors = new Set(actors);
     // We simply copy both to the snapshot and the differential and assume
     // they are in sync. Other tools will check this.
@@ -240,9 +239,6 @@ class Comparator {
   }
 
   report(actors, card = false) {
-    if (actors.length === 0) {
-      return { discrepancyCount: 0, targetMissingCount: 0, suppressedCount: 0 };
-    }
     actors = new Set(actors);
     if (this.profile.differential) {
       return this.#reportDiscrepancies(this.profile.differential.element, actors, card);
@@ -390,7 +386,7 @@ class Comparator {
     }
 
     result.discrepancyCount += 1;
-    console.log(`  - CARDINALITY: ${logicalModelElement.id} in logical model has ${logicalModelCardinality}, ${profileElement.id} in profile has cardinality ${profileCardinality}`);
+    console.log(`  - CARDINALITY: ${logicalModelElement.path} in logical model has ${logicalModelCardinality}, ${profileElement.id} in profile has cardinality ${profileCardinality}`);
   }
 
   #reportObligations(type, profileElement, logicalModelElement, actor, modelCodes, profileCodes) {
@@ -398,15 +394,15 @@ class Comparator {
 
     switch (type) {
       case "missing-in-profile":
-        console.log(`  - OBLIGATION MISSING IN PROFILE: ${logicalModelElement.id} in logical model has an obligation for actor ${actor} that is missing on ${profileElement.id} in the profile`);
+        console.log(`  - OBLIGATION MISSING IN PROFILE: ${logicalModelElement.path} in logical model has an obligation for actor ${actor} that is missing on ${profileElement.id} in the profile`);
         break;
 
       case "different-codes":
-        console.log(`  - OBLIGATION CODES DIFFER: ${logicalModelElement.id} in logical model has an obligation for actor ${actor} that is different in ${profileElement.id} in the profile`);
+        console.log(`  - OBLIGATION CODES DIFFER: ${logicalModelElement.path} in logical model has an obligation for actor ${actor} that is different in ${profileElement.id} in the profile`);
         break;
 
       case "missing-in-model":
-        console.log(`  - OBLIGATION NOT PRESENT IN LOGICAL MODEL: ${logicalModelElement.id} in logical model has no obligation for actor ${actor}, while ${profileElement.id} in the profile does`);
+        console.log(`  - OBLIGATION NOT PRESENT IN LOGICAL MODEL: ${logicalModelElement.path} in logical model has no obligation for actor ${actor}, while ${profileElement.id} in the profile does`);
         break;
 
       default:
@@ -423,7 +419,7 @@ class Comparator {
     for (const target of targets) {
       const logicalModelElement = this.#resolveMapTargetToElement(target, context.logicalModelIndex);
       if (!logicalModelElement) {
-        console.warn(`Mapping target not found in logical model "${context.logicalModel.url}": ${target} (from ${profileElement.path ?? profileElement.id})`);
+        console.warn(`  - MISSING: Mapping target not found in logical model "${context.logicalModel.url}": ${target} (from ${profileElement.path ?? profileElement.id})`);
         resolvedElements.add(null);
       } else {
         resolvedElements.add(logicalModelElement);
@@ -599,7 +595,7 @@ function main() {
   const cliOptions = cliParser.opts();
   const profiles = cliParser.args;
 
-    if (cliOptions.copy) {
+  if (cliOptions.copy) {
     console.log("Mode: copy");
   } else {
     console.log("Mode: report");
