@@ -363,7 +363,7 @@ class Comparator {
             }
 
             result.discrepancyCount += 1;
-            this.#reportDiscrepancy(discrepancyType, profileElement, logicalModelElement, context, actor, modelValues.codes, profileValues.codes);
+            this.#reportObligations(discrepancyType, profileElement, logicalModelElement, context, actor, modelValues.codes, profileValues.codes);
           }
         }
       }
@@ -381,7 +381,7 @@ class Comparator {
     console.log(`Copied cardinality from ${logicalModelElement.path} to ${profileElement.path ?? profileElement.id}`);
   }
 
-  #reportCardinality(profileElement, logicalModelElement, context, result) {
+  #reportCardinality(profileElement, logicalModelElement, result) {
     const profileCardinality = `${profileElement.min ?? ""}..${profileElement.max ?? ""}`;
     const logicalModelCardinality = `${logicalModelElement.min ?? ""}..${logicalModelElement.max ?? ""}`;
 
@@ -390,45 +390,23 @@ class Comparator {
     }
 
     result.discrepancyCount += 1;
-    console.log();
-    console.log("CARDINALITY DIFFERS");
-    console.log(`  Profile: ${this.profile.id}`);
-    console.log(`  Profile element: ${profileElement.path ?? profileElement.id}`);
-    console.log(`  Logical model: ${context.logicalModel.url}`);
-    console.log(`  Logical model element: ${logicalModelElement.path ?? logicalModelElement.id}`);
-    console.log(`  Logical model cardinality: ${logicalModelCardinality}`);
-    console.log(`  Profile cardinality: ${profileCardinality}`);
+    console.log(`  - CARDINALITY: ${logicalModelElement.id} in logical model has ${logicalModelCardinality}, ${profileElement.id} in profile has cardinality ${profileCardinality}`);
   }
 
-  #reportDiscrepancy(type, profileElement, logicalModelElement, context, actor, modelCodes, profileCodes) {
+  #reportObligations(type, profileElement, logicalModelElement, actor, modelCodes, profileCodes) {
     console.log();
 
     switch (type) {
       case "missing-in-profile":
-        console.log("OBLIGATION MISSING IN PROFILE");
-        console.log(
-          "  The logical model contains an " +
-            "obligation for this actor, but " +
-            "the profile does not."
-        );
+        console.log(`  - OBLIGATION MISSING IN PROFILE: ${logicalModelElement.id} in logical model has an obligation for actor ${actor} that is missing on ${profileElement.id} in the profile`);
         break;
 
       case "different-codes":
-        console.log("OBLIGATION CODES DIFFER");
-        console.log(
-          "  The logical model and profile " +
-            "contain obligations for this actor, " +
-            "but their obligation codes differ."
-        );
+        console.log(`  - OBLIGATION CODES DIFFER: ${logicalModelElement.id} in logical model has an obligation for actor ${actor} that is different in ${profileElement.id} in the profile`);
         break;
 
       case "missing-in-model":
-        console.log("OBLIGATION MISSING IN LOGICAL MODEL");
-        console.log(
-          "  The profile contains an obligation " +
-            "for this actor, but the logical model " +
-            "does not."
-        );
+        console.log(`  - OBLIGATION NOT PRESENT IN LOGICAL MODEL: ${logicalModelElement.id} in logical model has no obligation for actor ${actor}, while ${profileElement.id} in the profile does`);
         break;
 
       default:
@@ -436,15 +414,6 @@ class Comparator {
           `Unknown discrepancy type "${type}".`
         );
     }
-
-    console.log(`  Profile: ${this.profile.id}`);
-    console.log(`  Profile element: ` + `${profileElement.path ?? profileElement.id}`);
-    console.log(`  Logical model: ` + `${context.logicalModel.url}`);
-    console.log(`  Logical model file: ` + `${context.logicalModelFilename}`);
-    console.log(`  Logical model element: ` + `${logicalModelElement.path ?? logicalModelElement.id}`);
-    console.log(`  Actor: ${actor}`);
-    console.log(`  Logical model codes: ` + this.#formatCodes(modelCodes));
-    console.log(`  Profile codes: ` + this.#formatCodes(profileCodes));
   }
 
   #resolveTargetElements(profileElement, context) {
@@ -630,14 +599,22 @@ function main() {
   const cliOptions = cliParser.opts();
   const profiles = cliParser.args;
 
+    if (cliOptions.copy) {
+    console.log("Mode: copy");
+  } else {
+    console.log("Mode: report");
+  }
+
   const sdHandler = new StructureDefinitionHandler();
   const lmRegistry = new LogicalModelRegistry(cliOptions.lmFolder, sdHandler);
   console.log(`Indexed ${lmRegistry.size} logical ${lmRegistry.size === 1 ? "model" : "models"}.`);
 
-  const selectedActors = cliOptions.actor.map(stripVersionFromCanonical);
-  console.log("Actors:");
-  for (const actor of selectedActors) {
-    console.log(`  ${actor}`);
+  const selectedActors = cliOptions.actor ? cliOptions.actor.map(stripVersionFromCanonical) : [];
+  if (selectedActors.length) {
+    console.log("Actors:");
+    for (const actor of selectedActors) {
+      console.log(`  ${actor}`);
+    }
   }
 
   const suppressions = new Suppressions(cliOptions.suppressionsFilename);
@@ -653,36 +630,30 @@ function main() {
     const comparator = new Comparator(profile, lmRegistry, suppressions);
 
     console.log();
-    console.log(`Profile: ${profile.id} (${path.resolve(profileFilename)})`);
+    console.log(`==== Profile: ${profile.id} (${path.resolve(profileFilename)})`);
 
     if (!comparator.hasMatchingMappings) {
-      console.warn("  No profile mappings refer to an indexed logical model.");
+      console.warn("⚠️ No profile mappings refer to an indexed logical model.");
       skippedProfileCount += 1;
       continue;
     }
     processedProfileCount += 1;
 
     if (cliOptions.copy) {
-      console.log("  Mode: copy");
       comparator.copy(selectedActors, cliOptions.card);
       sdHandler.writeXML(comparator.profile, profileFilename);
       console.log(`  Updated: ${path.resolve(profileFilename)}`);
       continue;
     }
 
-    console.log("  Mode: report");
     const result = comparator.report(selectedActors, cliOptions.card);
     totalDiscrepancyCount += result.discrepancyCount;
     totalTargetMissingCount += result.targetMissingCount;
     totalSuppressedCount += result.suppressedCount;
     if (result.discrepancyCount === 0) {
-      console.log("  No unsuppressed obligation discrepancies found.");
+      console.log("  ✅ No unsuppressed obligation discrepancies found.");
     } else {
-      console.log(`  Found ${result.discrepancyCount} unsuppressed obligation ${result.discrepancyCount === 1 ? "discrepancy" : "discrepancies"}.`);
-    }
-
-    if (result.suppressedCount > 0) {
-      console.log(`  Suppressed ${result.suppressedCount} obligation ${result.suppressedCount === 1 ? "discrepancy" : "discrepancies"}.`);
+      console.log(`  ❌️ Found ${result.discrepancyCount} unsuppressed obligation ${result.discrepancyCount === 1 ? "discrepancy" : "discrepancies"}.`);
     }
   }
 
