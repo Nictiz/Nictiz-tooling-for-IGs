@@ -382,21 +382,22 @@ class Comparator {
   }
 
   #reportCardinality(profileElement, logicalModelElement, context, result) {
-    for (const property of ["min", "max"]) {
-      if (logicalModelElement[property] === undefined || profileElement[property] === logicalModelElement[property]) {
-        continue;
-      }
+    const profileCardinality = `${profileElement.min ?? ""}..${profileElement.max ?? ""}`;
+    const logicalModelCardinality = `${logicalModelElement.min ?? ""}..${logicalModelElement.max ?? ""}`;
 
-      result.discrepancyCount += 1;
-      console.log();
-      console.log(`CARDINALITY ${property.toUpperCase()} DIFFERS`);
-      console.log(`  Profile: ${this.profile.id}`);
-      console.log(`  Profile element: ${profileElement.path ?? profileElement.id}`);
-      console.log(`  Logical model: ${context.logicalModel.url}`);
-      console.log(`  Logical model element: ${logicalModelElement.path ?? logicalModelElement.id}`);
-      console.log(`  Logical model ${property}: ${logicalModelElement[property]}`);
-      console.log(`  Profile ${property}: ${profileElement[property] ?? "(not set)"}`);
+    if (profileCardinality === logicalModelCardinality) {
+      return;
     }
+
+    result.discrepancyCount += 1;
+    console.log();
+    console.log("CARDINALITY DIFFERS");
+    console.log(`  Profile: ${this.profile.id}`);
+    console.log(`  Profile element: ${profileElement.path ?? profileElement.id}`);
+    console.log(`  Logical model: ${context.logicalModel.url}`);
+    console.log(`  Logical model element: ${logicalModelElement.path ?? logicalModelElement.id}`);
+    console.log(`  Logical model cardinality: ${logicalModelCardinality}`);
+    console.log(`  Profile cardinality: ${profileCardinality}`);
   }
 
   #reportDiscrepancy(type, profileElement, logicalModelElement, context, actor, modelCodes, profileCodes) {
