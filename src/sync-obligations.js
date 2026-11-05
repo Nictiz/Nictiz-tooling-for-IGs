@@ -8,15 +8,18 @@ const { parseAllDocuments, isMap, isSeq } = require("yaml");
 
 const OBLIGATION_URL = "http://hl7.org/fhir/StructureDefinition/obligation";
 const ADDITIONAL_BINDING_URL = "http://hl7.org/fhir/tools/StructureDefinition/additional-binding";
+const SUPPRESSION_KEYS = Object.freeze({
+  OBLIGATIONS_FOR_ACTOR: "obligations for actor",
+});
 
 const YAML_FORMAT = `
 ...
 [profile id]:
-  unmatched obligations:
+  mismatches with the logical model:
     [path of the element]:
-      - actor: [canonical url for the actor that doesn't match]
+      - ${SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR}: [canonical url for the actor that doesn't match]
         reason: [explanation for the mismatch]
-      - actor: [canonical url for another actor that doesn't match]
+      - ${SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR}: [canonical url for another actor that doesn't match]
         reason: [explanation for the mismatch]
 ...
 `;
@@ -49,50 +52,64 @@ class Suppressions {
 
       if (!isMap(profileConfiguration)) continue;
 
-      const unmatchedObligations = profileConfiguration.get("unmatched obligations");
-      if (unmatchedObligations === undefined) continue;
+      const mismatches = profileConfiguration.get("mismatches with the logical model");
+      if (mismatches === undefined) continue;
 
-      if (unmatchedObligations === null || typeof unmatchedObligations !== "object" || Array.isArray(unmatchedObligations)) {
-        throw new Error(`"unmatched obligations" for profile "${profileId}" must be an object keyed by profile path:\n${CliParser.YAML_FORMAT}`);
+      if (!isMap(mismatches)) {
+        throw new Error(`"mismatches with the logical model" for profile "${profileId}" must be an object keyed by profile path:\n${YAML_FORMAT}`);
       }
 
       let profilePaths = new Map();
       if (this.#suppressions.has(profileId)) {
         profilePaths = this.#suppressions.get(profileId); // Merge with the suppressions from another YAML document
       }
-      for (const pair of unmatchedObligations.items) {
+      for (const pair of mismatches.items) {
         const profilePath = pair.key.value;
         const entries = pair.value;
         if (!isSeq(entries)) {
-          throw new Error(`Suppressions for path "${profilePath}" must be a list:\n${CliParser.YAML_FORMAT}`);
+          throw new Error(`Suppressions for path "${profilePath}" must be a list:\n${YAML_FORMAT}`);
         }
 
-        let actors = new Set();
+        let checks = new Map();
         if (profilePaths.has(profilePath)) {
-          actors = profilePaths.get(profilePath);
+          checks = profilePaths.get(profilePath);
         }
         for (const entry of entries.items) {
           if (!isMap(entry)) {
-            throw new Error(`Each suppression for path "${profilePath}" must be an object:\n${CliParser.YAML_FORMAT}`);
+            throw new Error(`Each suppression for path "${profilePath}" must be an object:\n${YAML_FORMAT}`);
           }
 
-          if (!entry.get("actor")) {
-            throw new Error(`The suppression for path "${profilePath}" must have an actor:\n${CliParser.YAML_FORMAT}`);
+          const selectors = entry.items.filter(pair => pair.key.value !== "reason");
+          if (selectors.length === 0) {
+            throw new Error(`The suppression for path "${profilePath}" must specify what to suppress:\n${YAML_FORMAT}`);
           }
 
-          if (!entry.get("reason")) {
-            throw new Error(`The suppression reason for path "${profilePath}" and actor "${entry.actor}" must be provided as a string:\n${CliParser.YAML_FORMAT}`);
+          const reason = entry.get("reason");
+          if (typeof reason !== "string" || !reason.trim()) {
+            throw new Error(`The suppression reason for path "${profilePath}" must be provided as a string:\n${YAML_FORMAT}`);
           }
-          actors.add(entry.get("actor"));
+          for (const selector of selectors) {
+            const key = selector.key.value;
+            let value = entry.get(key);
+            if (key === SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR) {
+              if (typeof value !== "string" || !value.trim()) {
+                throw new Error(`"${SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR}" for path "${profilePath}" must be a canonical URL:\n${YAML_FORMAT}`);
+              }
+              value = stripVersionFromCanonical(value);
+            }
+            if (!checks.has(key)) checks.set(key, new Map());
+            checks.get(key).set(canonicalJson(value), reason);
+          }
         }
-        profilePaths.set(profilePath, actors);
+        profilePaths.set(profilePath, checks);
       }
       this.#suppressions.set(profileId, profilePaths);
     }
   }
 
-  get(profileId, profilePath, actor) {
-    return this.#suppressions.get(profileId)?.get(profilePath)?.has(stripVersionFromCanonical(actor));
+  get(profileId, profilePath, check, value) {
+    if (check === SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR) value = stripVersionFromCanonical(value);
+    return this.#suppressions.get(profileId)?.get(profilePath)?.get(check)?.get(canonicalJson(value));
   }
 }
 
@@ -470,7 +487,7 @@ class Comparator {
       }
       if (!discrepancyType) continue;
 
-      const suppressionReason = this.suppressions.get(this.profile.id, profileElement.path, actor);
+      const suppressionReason = this.suppressions.get(this.profile.id, profileElement.path, SUPPRESSION_KEYS.OBLIGATIONS_FOR_ACTOR, actor);
 
       if (suppressionReason !== undefined) {
         result.suppressedCount += 1;
