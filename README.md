@@ -47,9 +47,9 @@ WARNING: this whole method interferes with Sushi if you're not careful. _If_ a `
 
 For details about running the script, run `translate-menu --help`.
 
-## sync-obligations
-This script is used to match the obligations defined in the logical model against those defined in the FHIR profiles. This is based on the mapping elements in the profiles, which are used to relate profile elements to elements in the logical model.
+## sync-profiles
+This script is used to match cardinality, value set bindings, and obligations defined in the logical model against those defined in the FHIR profiles. This is based on the mapping elements in the profiles, which are used to relate profile elements to elements in the logical model.
 
-The script can either be used to check if the obligations align, or to actually copy over the obligations in the profiles. The check mode can be used as an automated QA process. There could be good reasons for obligations to not align exactly, e.g. when there is an inexact match between the model and FHIR a deliberate exception can be made. For this reasons, known exceptions can be documented in the known-issues.yaml file. For the same reason, it is discouraged to use the copy mode of the script as part of an automated process. If there are deliberate mismatches, you don't want to overwrite them; setting of changing obligations should be a concious process.
+The script can either be used to check if these definitions align, or to actually copy over these definitions to the profiles. The check mode can be used as an automated QA process. There could be good reasons for definitions to not align exactly, e.g. when there is an inexact match between the model and FHIR a deliberate exception can be made. For this reasons, known exceptions can be documented in the known-issues.yaml file. For the same reason, it is discouraged to use the copy mode of the script as part of an automated process. If there are deliberate mismatches, you don't want to overwrite them; setting of changing obligations should be a conscious process.
 
-For details, run `sync-obligations --help`.
+For details, run `sync-profiles --help`.
