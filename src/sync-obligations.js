@@ -644,10 +644,10 @@ function main() {
     totalDiscrepancyCount += result.discrepancyCount;
     totalTargetMissingCount += result.targetMissingCount;
     totalSuppressedCount += result.suppressedCount;
-    if (result.discrepancyCount === 0) {
-      console.log("  ✅ No unsuppressed obligation discrepancies found.");
+    if (result.discrepancyCount > 0 || result.targetMissingCount > 0) {
+      console.log("  ❌ Checks failed.");
     } else {
-      console.log(`  ❌️ Found ${result.discrepancyCount} unsuppressed obligation ${result.discrepancyCount === 1 ? "discrepancy" : "discrepancies"}.`);
+      console.log("  ✅ Checks passed.");
     }
   }
 
