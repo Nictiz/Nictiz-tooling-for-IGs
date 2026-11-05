@@ -241,11 +241,12 @@ class Comparator {
 
   report(actors, card = false, bindings = false) {
     actors = new Set(actors);
-    if (this.profile.differential) {
-      return this.#reportDiscrepancies(this.profile.differential.element, actors, card, bindings);
-    }
+    // For comparison, prefer the snapshot over the differential
     if (this.profile.snapshot) {
       return this.#reportDiscrepancies(this.profile.snapshot.element, actors, card, bindings);
+    }
+    if (this.profile.differential) {
+      return this.#reportDiscrepancies(this.profile.differential.element, actors, card, bindings);
     }
 
     return {
