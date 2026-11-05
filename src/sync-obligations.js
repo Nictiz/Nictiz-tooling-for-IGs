@@ -330,37 +330,10 @@ class Comparator {
           }
 
           if (card) {
-            this.#reportCardinality(profileElement, logicalModelElement, context, result);
+            this.#reportCardinality(profileElement, logicalModelElement, result);
           }
 
-          const profileObligationsByActor = this.#getActorObligations(profileElement, actors);
-          const modelObligationsByActor = this.#getActorObligations(logicalModelElement, actors);
-
-          for (const actor of actors) {
-            const profileValues = profileObligationsByActor.get(actor);
-            const modelValues = modelObligationsByActor.get(actor);
-
-            let discrepancyType;
-
-            if (modelValues.present && !profileValues.present) {
-              discrepancyType = "missing-in-profile";
-            } else if (!modelValues.present && profileValues.present) {
-              discrepancyType = "missing-in-model";
-            } else if (modelValues.present && profileValues.present && !this.#setsAreEqual(modelValues.codes, profileValues.codes)) {
-              discrepancyType = "different-codes";
-            }
-            if (!discrepancyType) continue;
-
-            const suppressionReason = this.suppressions.get(this.profile.id, profileElement.path, actor);
-
-            if (suppressionReason !== undefined) {
-              result.suppressedCount += 1;
-              continue;
-            }
-
-            result.discrepancyCount += 1;
-            this.#reportObligations(discrepancyType, profileElement, logicalModelElement, context, actor, modelValues.codes, profileValues.codes);
-          }
+          this.#reportObligations(profileElement, logicalModelElement, actors, result);
         }
       }
     }
@@ -389,24 +362,51 @@ class Comparator {
     console.log(`  - CARDINALITY: ${logicalModelElement.path} in logical model has ${logicalModelCardinality}, ${profileElement.id} in profile has cardinality ${profileCardinality}`);
   }
 
-  #reportObligations(type, profileElement, logicalModelElement, actor, modelCodes, profileCodes) {
-    switch (type) {
-      case "missing-in-profile":
-        console.log(`  - OBLIGATION MISSING IN PROFILE: ${logicalModelElement.path} in logical model has an obligation for actor ${actor} that is missing on ${profileElement.id} in the profile`);
-        break;
+  #reportObligations(profileElement, logicalModelElement, actors, result) {
+    const profileObligationsByActor = this.#getActorObligations(profileElement, actors);
+    const modelObligationsByActor = this.#getActorObligations(logicalModelElement, actors);
 
-      case "different-codes":
-        console.log(`  - OBLIGATION CODES DIFFER: ${logicalModelElement.path} in logical model has an obligation for actor ${actor} that is different in ${profileElement.id} in the profile`);
-        break;
+    for (const actor of actors) {
+      const profileValues = profileObligationsByActor.get(actor);
+      const modelValues = modelObligationsByActor.get(actor);
 
-      case "missing-in-model":
-        console.log(`  - OBLIGATION NOT PRESENT IN LOGICAL MODEL: ${logicalModelElement.path} in logical model has no obligation for actor ${actor}, while ${profileElement.id} in the profile does`);
-        break;
+      let discrepancyType;
 
-      default:
-        throw new Error(
-          `Unknown discrepancy type "${type}".`
-        );
+      if (modelValues.present && !profileValues.present) {
+        discrepancyType = "missing-in-profile";
+      } else if (!modelValues.present && profileValues.present) {
+        discrepancyType = "missing-in-model";
+      } else if (modelValues.present && profileValues.present && !this.#setsAreEqual(modelValues.codes, profileValues.codes)) {
+        discrepancyType = "different-codes";
+      }
+      if (!discrepancyType) continue;
+
+      const suppressionReason = this.suppressions.get(this.profile.id, profileElement.path, actor);
+
+      if (suppressionReason !== undefined) {
+        result.suppressedCount += 1;
+        continue;
+      }
+
+      result.discrepancyCount += 1;
+      switch (discrepancyType) {
+        case "missing-in-profile":
+          console.log(`  - OBLIGATION MISSING IN PROFILE: ${logicalModelElement.path} in logical model has an obligation for actor ${actor} that is missing on ${profileElement.id} in the profile`);
+          break;
+
+        case "different-codes":
+          console.log(`  - OBLIGATION CODES DIFFER: ${logicalModelElement.path} in logical model has an obligation for actor ${actor} that is different in ${profileElement.id} in the profile`);
+          break;
+
+        case "missing-in-model":
+          console.log(`  - OBLIGATION NOT PRESENT IN LOGICAL MODEL: ${logicalModelElement.path} in logical model has no obligation for actor ${actor}, while ${profileElement.id} in the profile does`);
+          break;
+
+        default:
+          throw new Error(
+            `Unknown discrepancy type "${discrepancyType}".`
+          );
+      }
     }
   }
 
