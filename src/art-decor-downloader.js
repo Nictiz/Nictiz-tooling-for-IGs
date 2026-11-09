@@ -6,7 +6,6 @@ const commander = require("commander");
 const { parseSushiYaml } = require("./ig-config");
 const { getLogicalModelReferences } = require("./excel-to-artifacts");
 
-const serverSourceUrl = "https://decor.nictiz.nl";
 const translationExtensionUrl = "http://hl7.org/fhir/StructureDefinition/translation";
 const additionalBindingExtensionUrl = "http://hl7.org/fhir/tools/StructureDefinition/additional-binding";
 
@@ -57,8 +56,8 @@ class ArtDecorDownloader {
     StructureDefinition: "logicalmodels"
   });
 
-  #completedSearches = new Set();
-  #pendingSearches = new Set();
+  #completedRequests = new Set();
+  #pendingRequests = new Set();
 
   constructor(adProject, outputFolder, serverSourceUrl = "https://decor.nictiz.nl") {
     if (!adProject) throw new Error("No ART-DECOR project defined for downloading FHIR artifacts");
@@ -77,27 +76,65 @@ class ArtDecorDownloader {
     return this.#search("ValueSet", { url: url.toString() });
   }
 
+  async getLogicalModel(adId) {
+    const parts = adId.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      console.warn(`Skipping logical model: invalid ART-DECOR ID "${adId}"`);
+      return [];
+    }
+    const date = parts[1].replace(/[-:T]/g, "");
+    const id = `${parts[0]}--${date}`;
+    const url = new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/StructureDefinition/${encodeURIComponent(id)}`);
+    url.searchParams.set("language", "en-US");
+    url.searchParams.set("_format", "json");
+    return this.#request("StructureDefinition", url, false);
+  }
+
+  /**
+   * Searches the configured ART-DECOR project's FHIR endpoint and writes matching
+   * resources from a single Bundle response as JSON. Included resources and
+   * OperationOutcome entries are ignored; pagination links are not followed.
+   *
+   * Destinations come from resourceFolders, relative to this.outputFolder.
+   * Resource languages are normalized before writing. Filenames default to
+   * <resourceType>-<name or id>.json, with suffixes for duplicate names.
+   *
+   * Identical searches (regardless of parameter order) are skipped
+   * while pending and after success. Errors during fetching, response processing,
+   * or writing are logged and return an empty array; failed searches can be retried.
+   *
+   * @param {string} resourceType FHIR resource type present in resourceFolders.
+   * @param {Object.<string, string>} [parameters={}] FHIR search parameters;
+   *   _format is always set to json.
+   * @returns {Promise<Array<Object>>} Written resources, or an empty array for
+   *   no matches, a skipped search, or a handled error.
+   */
   async #search(resourceType, parameters = {}) {
     const searchUrl = new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/${resourceType}`);
     searchUrl.search = new URLSearchParams(parameters).toString();
     searchUrl.searchParams.set("_format", "json");
     searchUrl.searchParams.sort();
-    const searchKey = searchUrl.toString();
-    if (this.#completedSearches.has(searchKey) || this.#pendingSearches.has(searchKey)) return [];
-    this.#pendingSearches.add(searchKey);
+    return this.#request(resourceType, searchUrl, true);
+  }
+
+  async #request(resourceType, url, isSearch) {
+    const requestKey = url.toString();
+    if (this.#completedRequests.has(requestKey) || this.#pendingRequests.has(requestKey)) return [];
+    this.#pendingRequests.add(requestKey);
     try {
       const outputFolder = path.join(this.outputFolder, ArtDecorDownloader.resourceFolders[resourceType]);
-      const response = await fetch(searchKey, {
+      const response = await fetch(requestKey, {
         headers: { "Accept": "application/fhir+json, application/json; fhirVersion=4.0" }
       });
       if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
-      const bundle = await response.json();
-      if (bundle.resourceType !== "Bundle") {
-        throw new Error(`Expected Bundle, got ${bundle.resourceType ?? "unknown resource"}`);
+      const body = await response.json();
+      const expectedType = isSearch ? "Bundle" : resourceType;
+      if (body.resourceType !== expectedType) {
+        throw new Error(`Expected ${expectedType}, got ${body.resourceType ?? "unknown resource"}`);
       }
       const usedFileNames = new Set();
       const resources = [];
-      for (const entry of bundle.entry ?? []) {
+      for (const entry of isSearch ? body.entry ?? [] : [{ resource: body }]) {
         const resource = entry.resource;
         if (entry.search?.mode === "outcome" || entry.search?.mode === "include" ||
           resource?.resourceType !== resourceType) continue;
@@ -108,13 +145,13 @@ class ArtDecorDownloader {
         resources.push(resource);
         console.log(`Saved ${resourceType} to ${outputFile}`);
       }
-      this.#completedSearches.add(searchKey);
+      this.#completedRequests.add(requestKey);
       return resources;
     } catch (error) {
-      console.warn(`Couldn't search ${resourceType} in ART-DECOR, "${error.message}"`);
+      console.warn(`Couldn't download ${resourceType} from ART-DECOR, "${error.message}"`);
       return [];
     } finally {
-      this.#pendingSearches.delete(searchKey);
+      this.#pendingRequests.delete(requestKey);
     }
   }
 
@@ -272,39 +309,21 @@ class ProfileValueSetCollector {
 }
 
 class LogicalModelDownloader {
-  constructor(adProject, outputFolder, valueSetDownloader = null) {
-    if (!adProject) throw new Error("No ART-DECOR project defined for downloading logical models");
-    this.adProject = adProject;
-    this.outputFolder = outputFolder;
+  constructor(artDecorDownloader, valueSetDownloader = null) {
+    this.artDecorDownloader = artDecorDownloader;
     this.valueSetDownloader = valueSetDownloader;
   }
 
-  async download(adId, fileRoot) {
-    const id_parts = adId.split("/");
-    if (id_parts.length != 2 || !id_parts[0] || !id_parts[1]) {
-      console.warn(`Skipping logical model for ${fileRoot}: invalid ART-DECOR ID "${adId}"`);
-      return;
-    }
-    const id_date = id_parts[1].replace(/-/g, "").replace(/:/g, "").replace("T", "");
-    const fetch_url = `${serverSourceUrl}/fhir/4.0/${this.adProject}/StructureDefinition/${id_parts[0]}--${id_date}?_format=json&language=en-US`;
+  async download(adId) {
     try {
-      const response = await fetch(`${fetch_url}`);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${response.statusText} - ${fetch_url}`);
-      }
-
-      const body = await response.json();
-      normalizeResourceLanguages(body);
-      
-      const outputFile = path.join(this.outputFolder, fileRoot + ".json");
-      fs.writeFileSync(outputFile, JSON.stringify(body, null, 2), 'utf8');
-      console.log(`Saved LogicalModel to ${outputFile}`);
-
-      if (this.valueSetDownloader) {
-        await this.valueSetDownloader.downloadAll(this.#getBindingValueSetCanonicals(body));
+      const models = await this.artDecorDownloader.getLogicalModel(adId);
+      for (const model of models) {
+        if (this.valueSetDownloader) {
+          await this.valueSetDownloader.downloadAll(this.#getBindingValueSetCanonicals(model));
+        }
       }
     } catch (error) {
-      console.warn(`Couldn't download logical model for ${fileRoot} from ART-DECOR using ${fetch_url}, "${error.message}"`);
+      console.warn(`Couldn't download logical model ${adId} from ART-DECOR, "${error.message}"`);
       return;
     }
   }
@@ -383,9 +402,9 @@ async function main() {
     ? new ValueSetDownloader(artDecorDownloader) : null;
   if (actors) await artDecorDownloader.getActorDefinitions();
   if (logicalModels) {
-    const downloader = new LogicalModelDownloader(config.adProject, logicalModelFolder, options.dontDescend ? null : valueSets);
-    for (const { adId, fileRoot } of getLogicalModelReferences(inputFolder)) {
-      await downloader.download(adId, fileRoot);
+    const downloader = new LogicalModelDownloader(artDecorDownloader, options.dontDescend ? null : valueSets);
+    for (const { adId } of getLogicalModelReferences(inputFolder)) {
+      await downloader.download(adId);
     }
   }
   if (profiles) {
