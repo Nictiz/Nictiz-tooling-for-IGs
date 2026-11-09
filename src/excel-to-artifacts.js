@@ -557,7 +557,6 @@ function getLogicalModelReferences(inputFolder) {
 
 async function main() {
   commander.program
-    .option("--requirements", "Create Requirements resources and Concept pages from Excel (default)")
     .argument("<inputFolder>")
     .argument("<outputFolder>")
     .parse();
