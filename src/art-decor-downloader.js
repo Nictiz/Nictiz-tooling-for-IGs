@@ -46,6 +46,81 @@ function normalizeTranslationExtensionLanguages(value) {
   }
 }
 
+class ArtDecorDownloader {
+  static artifactTypes = Object.freeze({
+    ActorDefinition: { folder: "resources", resourceType: "ActorDefinition" },
+    ValueSet: { folder: "vocabulary", resourceType: "ValueSet" },
+    LogicalModel: { folder: "logicalmodels", resourceType: "StructureDefinition" }
+  });
+
+  #downloadedCanonicals = new Set();
+  #pendingDownloads = new Set();
+
+  constructor(adProject, outputFolder, serverSourceUrl = "https://decor.nictiz.nl") {
+    if (!adProject) throw new Error("No ART-DECOR project defined for downloading FHIR artifacts");
+    if (!outputFolder) throw new Error("No output folder defined for downloading FHIR artifacts");
+    this.adProject = adProject;
+    this.outputFolder = outputFolder;
+    this.serverSourceUrl = serverSourceUrl;
+  }
+
+  async #download(canonical, artifactType, fileName) {
+    const canonicalObj = new URL(canonical.split("|")[0]);
+    const normalizedCanonical = canonicalObj.toString();
+    if (this.#downloadedCanonicals.has(normalizedCanonical) ||
+      this.#pendingDownloads.has(normalizedCanonical)) return;
+
+    this.#pendingDownloads.add(normalizedCanonical);
+    try {
+      const { folder, resourceType } = ArtDecorDownloader.artifactTypes[artifactType];
+      const isDirectFetch = canonicalObj.origin === new URL(this.serverSourceUrl).origin;
+      const downloadUrl = isDirectFetch
+        ? canonicalObj
+        : new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/${resourceType}`);
+      if (!isDirectFetch) downloadUrl.searchParams.set("url", canonicalObj.toString());
+      downloadUrl.searchParams.set("_format", "json");
+
+      const response = await fetch(downloadUrl.toString(), {
+        headers: {
+          "Accept": "application/fhir+json, application/json; fhirVersion=4.0"
+        }
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+
+      let resource = await response.json();
+      if (!isDirectFetch) {
+        if (resource.resourceType !== "Bundle") {
+          throw new Error(`Expected Bundle, got ${resource.resourceType ?? "unknown resource"}`);
+        }
+        const matches = (resource.entry ?? [])
+          .filter(entry => entry.search?.mode !== "outcome" && entry.search?.mode !== "include")
+          .map(entry => entry.resource)
+          .filter(entryResource => entryResource?.resourceType === resourceType);
+        if (!matches.length) throw new Error(`No ${resourceType} found for ${normalizedCanonical}`);
+        if (matches.length > 1) {
+          console.warn(`Multiple ${resourceType} resources have canonical ${normalizedCanonical}. Downloading the first one.`);
+        }
+        resource = matches[0];
+      }
+      if (resource.resourceType !== resourceType) {
+        throw new Error(`Expected ${resourceType}, got ${resource.resourceType ?? "unknown resource"}`);
+      }
+
+      const outputFolder = path.join(this.outputFolder, folder);
+      const outputFile = path.join(outputFolder, fileName.endsWith(".json") ? fileName : `${fileName}.json`);
+      normalizeResourceLanguages(resource);
+      fs.mkdirSync(outputFolder, { recursive: true });
+      fs.writeFileSync(outputFile, JSON.stringify(resource, null, 2), "utf8");
+      this.#downloadedCanonicals.add(normalizedCanonical);
+      console.log(`Saved ${resourceType} to ${outputFile}`);
+    } catch (error) {
+      console.warn(`Couldn't download ${normalizedCanonical} from ART-DECOR, "${error.message}"`);
+    } finally {
+      this.#pendingDownloads.delete(normalizedCanonical);
+    }
+  }
+}
+
 class ActorDefinitionDownloader {
   constructor(adProject, outputFolder) {
     if (!adProject) {
@@ -473,4 +548,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ActorDefinitionDownloader, ValueSetDownloader, LogicalModelDownloader };
+module.exports = { ArtDecorDownloader, ActorDefinitionDownloader, ValueSetDownloader, LogicalModelDownloader };
