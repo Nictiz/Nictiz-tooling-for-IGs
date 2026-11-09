@@ -47,14 +47,14 @@ function normalizeTranslationExtensionLanguages(value) {
 }
 
 class ArtDecorDownloader {
-  static artifactTypes = Object.freeze({
-    ActorDefinition: { folder: "resources", resourceType: "ActorDefinition" },
-    ValueSet: { folder: "vocabulary", resourceType: "ValueSet" },
-    LogicalModel: { folder: "logicalmodels", resourceType: "StructureDefinition" }
+  static resourceFolders = Object.freeze({
+    ActorDefinition: "resources",
+    ValueSet: "vocabulary",
+    StructureDefinition: "logicalmodels"
   });
 
-  #downloadedCanonicals = new Set();
-  #pendingDownloads = new Set();
+  #completedSearches = new Set();
+  #pendingSearches = new Set();
 
   constructor(adProject, outputFolder, serverSourceUrl = "https://decor.nictiz.nl") {
     if (!adProject) throw new Error("No ART-DECOR project defined for downloading FHIR artifacts");
@@ -63,135 +63,61 @@ class ArtDecorDownloader {
     this.outputFolder = outputFolder;
     this.serverSourceUrl = serverSourceUrl;
   }
+  
+  async getActorDefinitions() {
+    await this.#search("ActorDefinition", { publisher: this.adProject });
+  }
 
-  async #download(canonical, artifactType, fileName) {
-    const canonicalObj = new URL(canonical.split("|")[0]);
-    const normalizedCanonical = canonicalObj.toString();
-    if (this.#downloadedCanonicals.has(normalizedCanonical) ||
-      this.#pendingDownloads.has(normalizedCanonical)) return;
-
-    this.#pendingDownloads.add(normalizedCanonical);
+  async #search(resourceType, parameters = {}) {
+    const searchUrl = new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/${resourceType}`);
+    searchUrl.search = new URLSearchParams(parameters).toString();
+    searchUrl.searchParams.set("_format", "json");
+    searchUrl.searchParams.sort();
+    const searchKey = searchUrl.toString();
+    if (this.#completedSearches.has(searchKey) || this.#pendingSearches.has(searchKey)) return;
+    this.#pendingSearches.add(searchKey);
     try {
-      const { folder, resourceType } = ArtDecorDownloader.artifactTypes[artifactType];
-      const isDirectFetch = canonicalObj.origin === new URL(this.serverSourceUrl).origin;
-      const downloadUrl = isDirectFetch
-        ? canonicalObj
-        : new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/${resourceType}`);
-      if (!isDirectFetch) downloadUrl.searchParams.set("url", canonicalObj.toString());
-      downloadUrl.searchParams.set("_format", "json");
-
-      const response = await fetch(downloadUrl.toString(), {
-        headers: {
-          "Accept": "application/fhir+json, application/json; fhirVersion=4.0"
-        }
+      const outputFolder = path.join(this.outputFolder, ArtDecorDownloader.resourceFolders[resourceType]);
+      const response = await fetch(searchKey, {
+        headers: { "Accept": "application/fhir+json, application/json; fhirVersion=4.0" }
       });
       if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
-
-      let resource = await response.json();
-      if (!isDirectFetch) {
-        if (resource.resourceType !== "Bundle") {
-          throw new Error(`Expected Bundle, got ${resource.resourceType ?? "unknown resource"}`);
-        }
-        const matches = (resource.entry ?? [])
-          .filter(entry => entry.search?.mode !== "outcome" && entry.search?.mode !== "include")
-          .map(entry => entry.resource)
-          .filter(entryResource => entryResource?.resourceType === resourceType);
-        if (!matches.length) throw new Error(`No ${resourceType} found for ${normalizedCanonical}`);
-        if (matches.length > 1) {
-          console.warn(`Multiple ${resourceType} resources have canonical ${normalizedCanonical}. Downloading the first one.`);
-        }
-        resource = matches[0];
+      const bundle = await response.json();
+      if (bundle.resourceType !== "Bundle") {
+        throw new Error(`Expected Bundle, got ${bundle.resourceType ?? "unknown resource"}`);
       }
-      if (resource.resourceType !== resourceType) {
-        throw new Error(`Expected ${resourceType}, got ${resource.resourceType ?? "unknown resource"}`);
-      }
-
-      const outputFolder = path.join(this.outputFolder, folder);
-      const outputFile = path.join(outputFolder, fileName.endsWith(".json") ? fileName : `${fileName}.json`);
-      normalizeResourceLanguages(resource);
-      fs.mkdirSync(outputFolder, { recursive: true });
-      fs.writeFileSync(outputFile, JSON.stringify(resource, null, 2), "utf8");
-      this.#downloadedCanonicals.add(normalizedCanonical);
-      console.log(`Saved ${resourceType} to ${outputFile}`);
-    } catch (error) {
-      console.warn(`Couldn't download ${normalizedCanonical} from ART-DECOR, "${error.message}"`);
-    } finally {
-      this.#pendingDownloads.delete(normalizedCanonical);
-    }
-  }
-}
-
-class ActorDefinitionDownloader {
-  constructor(adProject, outputFolder) {
-    if (!adProject) {
-      console.error("No ART-DECOR project specified as source for the ActorDefinitions");
-      process.exit(1);
-    }
-    this.adProject = adProject;
-    this.outputFolder = outputFolder;
-  }
-
-  async downloadAll() {
-    try {
-      const actorDefinitionsUrl = `${serverSourceUrl}/fhir/4.0/${this.adProject}/ActorDefinition?publisher=${this.adProject}&_format=json`;
-      const body = await this.#fetchJson(actorDefinitionsUrl);
       const usedFileNames = new Set();
-
-      for (const actorDefinition of this.#getActorDefinitions(body)) {
-        const outputFile = path.join(this.outputFolder, this.#getFileName(actorDefinition, usedFileNames));
-        
-        normalizeResourceLanguages(actorDefinition);
-        
-        fs.writeFileSync(outputFile, JSON.stringify(actorDefinition, null, 2), "utf8");
-        console.log(`Saved ActorDefinition to ${outputFile}`);
+      for (const entry of bundle.entry ?? []) {
+        const resource = entry.resource;
+        if (entry.search?.mode === "outcome" || entry.search?.mode === "include" ||
+          resource?.resourceType !== resourceType) continue;
+        const outputFile = path.join(outputFolder, this.#constructFileName(resource, usedFileNames));
+        normalizeResourceLanguages(resource);
+        fs.mkdirSync(outputFolder, { recursive: true });
+        fs.writeFileSync(outputFile, JSON.stringify(resource, null, 2), "utf8");
+        console.log(`Saved ${resourceType} to ${outputFile}`);
       }
+      this.#completedSearches.add(searchKey);
     } catch (error) {
-      console.warn(`Couldn't download ActorDefinitions from ART-DECOR, "${error.message}"`);
+      console.warn(`Couldn't search ${resourceType} in ART-DECOR, "${error.message}"`);
+    } finally {
+      this.#pendingSearches.delete(searchKey);
     }
   }
 
-  async #fetchJson(url) {
-    const response = await fetch(url, {
-      headers: {
-        "Accept": "application/fhir+json, application/json; fhirVersion=4.0"
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  #constructFileName(resource, usedFileNames) {
+    const name = resource.name || resource.id;
+    if (!name) throw new Error(`${resource.resourceType} has no name or ID`);
+    const baseName = `${resource.resourceType}-${this.#safeFileName(name)}`;
+    let fileName = `${baseName}.json`;
+    if (usedFileNames.has(fileName)) {
+      const suffix = this.#safeFileName(resource.id || "duplicate");
+      fileName = `${baseName}-${suffix}.json`;
+      let index = 2;
+      while (usedFileNames.has(fileName)) fileName = `${baseName}-${suffix}-${index++}.json`;
     }
-
-    return response.json();
-  }
-
-  #getActorDefinitions(body) {
-    if (body.resourceType == "ActorDefinition") {
-      return [body];
-    }
-
-    if (body.resourceType != "Bundle") {
-      throw new Error(`Expected Bundle, got ${body.resourceType ?? "unknown resource"}`);
-    }
-
-    return (body.entry ?? [])
-      .map(entry => entry.resource)
-      .filter(resource => resource?.resourceType == "ActorDefinition");
-  }
-
-  #getFileName(actorDefinition, usedFileNames) {
-    const actorDefinitionName = actorDefinition.name || actorDefinition.id || "ActorDefinition";
-    const baseFileName = `ActorDefinition-${this.#safeFileName(actorDefinitionName)}.json`;
-
-    if (!usedFileNames.has(baseFileName)) {
-      usedFileNames.add(baseFileName);
-      return baseFileName;
-    }
-
-    const fallbackName = actorDefinition.id || actorDefinition.url?.split("/").filter(Boolean).pop() || "duplicate";
-    const duplicateFileName = `ActorDefinition-${this.#safeFileName(actorDefinitionName)}-${this.#safeFileName(fallbackName)}.json`;
-    usedFileNames.add(duplicateFileName);
-    console.warn(`Duplicate ActorDefinition name "${actorDefinitionName}"; saved duplicate as ${duplicateFileName}`);
-    return duplicateFileName;
+    usedFileNames.add(fileName);
+    return fileName;
   }
 
   #safeFileName(fileName) {
@@ -528,7 +454,7 @@ async function main() {
   ]) fs.mkdirSync(folder, { recursive: true });
   const valueSets = profiles || (logicalModels && !options.dontDescend)
     ? new ValueSetDownloader(config.adProject, vocabularyFolder) : null;
-  if (actors) await new ActorDefinitionDownloader(config.adProject, resourcesFolder).downloadAll();
+  if (actors) await new ArtDecorDownloader(config.adProject, outputFolder).getActorDefinitions();
   if (logicalModels) {
     const downloader = new LogicalModelDownloader(config.adProject, logicalModelFolder, options.dontDescend ? null : valueSets);
     for (const { adId, fileRoot } of getLogicalModelReferences(inputFolder)) {
@@ -548,4 +474,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ArtDecorDownloader, ActorDefinitionDownloader, ValueSetDownloader, LogicalModelDownloader };
+module.exports = { ArtDecorDownloader, ValueSetDownloader, LogicalModelDownloader };
