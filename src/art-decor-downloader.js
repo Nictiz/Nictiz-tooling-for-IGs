@@ -47,6 +47,10 @@ function normalizeTranslationExtensionLanguages(value) {
 }
 
 class ArtDecorDownloader {
+  static normalizeCanonical(canonical) {
+    return typeof canonical === "string" ? canonical.split("|")[0].trim() : "";
+  }
+
   static resourceFolders = Object.freeze({
     ActorDefinition: "resources",
     ValueSet: "vocabulary",
@@ -68,13 +72,18 @@ class ArtDecorDownloader {
     await this.#search("ActorDefinition", { publisher: this.adProject });
   }
 
+  async getValueSet(canonical) {
+    const url = new URL(ArtDecorDownloader.normalizeCanonical(canonical));
+    return this.#search("ValueSet", { url: url.toString() });
+  }
+
   async #search(resourceType, parameters = {}) {
     const searchUrl = new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/${resourceType}`);
     searchUrl.search = new URLSearchParams(parameters).toString();
     searchUrl.searchParams.set("_format", "json");
     searchUrl.searchParams.sort();
     const searchKey = searchUrl.toString();
-    if (this.#completedSearches.has(searchKey) || this.#pendingSearches.has(searchKey)) return;
+    if (this.#completedSearches.has(searchKey) || this.#pendingSearches.has(searchKey)) return [];
     this.#pendingSearches.add(searchKey);
     try {
       const outputFolder = path.join(this.outputFolder, ArtDecorDownloader.resourceFolders[resourceType]);
@@ -87,6 +96,7 @@ class ArtDecorDownloader {
         throw new Error(`Expected Bundle, got ${bundle.resourceType ?? "unknown resource"}`);
       }
       const usedFileNames = new Set();
+      const resources = [];
       for (const entry of bundle.entry ?? []) {
         const resource = entry.resource;
         if (entry.search?.mode === "outcome" || entry.search?.mode === "include" ||
@@ -95,11 +105,14 @@ class ArtDecorDownloader {
         normalizeResourceLanguages(resource);
         fs.mkdirSync(outputFolder, { recursive: true });
         fs.writeFileSync(outputFile, JSON.stringify(resource, null, 2), "utf8");
+        resources.push(resource);
         console.log(`Saved ${resourceType} to ${outputFile}`);
       }
       this.#completedSearches.add(searchKey);
+      return resources;
     } catch (error) {
       console.warn(`Couldn't search ${resourceType} in ART-DECOR, "${error.message}"`);
+      return [];
     } finally {
       this.#pendingSearches.delete(searchKey);
     }
@@ -134,15 +147,8 @@ class ValueSetDownloader {
     "https://specifications.openehr.org"
   ];
 
-  constructor(adProject, outputFolder) {
-    if (!adProject) {
-      console.error("No ART-DECOR project defined for downloading ValueSets");
-      process.exit(1);
-    }
-    this.adProject = adProject;
-    this.outputFolder = outputFolder;
-    this.downloadedCanonicals = new Set();
-    this.pendingDownloads = new Map();
+  constructor(artDecorDownloader) {
+    this.artDecorDownloader = artDecorDownloader;
   }
 
   async downloadAll(canonicals) {
@@ -152,65 +158,17 @@ class ValueSetDownloader {
   }
 
   async download(canonical) {
-    const normalizedCanonical = this.#normalizeCanonical(canonical);
+    const normalizedCanonical = ArtDecorDownloader.normalizeCanonical(canonical);
     if (
       !normalizedCanonical ||
-      this.#shouldSkipCanonical(normalizedCanonical) ||
-      this.downloadedCanonicals.has(normalizedCanonical)
+      ValueSetDownloader.skippedCanonicalPrefixes.some(prefix => normalizedCanonical.startsWith(prefix))
     ) return;
 
-    if (this.pendingDownloads.has(normalizedCanonical)) {
-      await this.pendingDownloads.get(normalizedCanonical);
-      return;
-    }
-
-    const download = this.#download(normalizedCanonical)
-      .finally(() => this.pendingDownloads.delete(normalizedCanonical));
-
-    this.pendingDownloads.set(normalizedCanonical, download);
-    await download;
-  }
-
-  async #download(canonical) {
-    this.downloadedCanonicals.add(canonical);
-
     try {
-      const response = await fetch(this.#toDownloadUrl(canonical), {
-        headers: {
-          "Accept": "application/fhir+json, application/json; fhirVersion=4.0"
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      const valueSets = await this.artDecorDownloader.getValueSet(normalizedCanonical);
+      for (const valueSet of valueSets) {
+        await this.downloadAll(this.#getIncludedValueSetCanonicals(valueSet));
       }
-
-      const bundle = await response.json();
-      if (bundle.resourceType != "Bundle") {
-        throw new Error(`Expected Bundle, got ${bundle.resourceType ?? "unknown resource"}`);
-      }
-      if (bundle.total < 1) {
-        console.error(`Couldn't download ValueSet ${canonical}. Bundle turned up empty for request ${this.#toDownloadUrl(canonical)}`);
-        return;
-      } else if (bundle.total > 1) {
-        console.warn(`Multiple ValueSets are present with canonical ${canonical}. Downloading the first one.`);
-      }
-      const valueSet = bundle.entry[0].resource;
-      if (valueSet.resourceType != "ValueSet") {
-        throw new Error(`Expected ValueSet, got ${valueSet.resourceType ?? "unknown resource"}`);
-      }
-
-      const outputFile = path.join(
-        this.outputFolder,
-        `${this.#safeFileName(valueSet.name || valueSet.id || this.#fallbackName(canonical))}.json`
-      );
-      
-      normalizeResourceLanguages(valueSet);
-
-      fs.writeFileSync(outputFile, JSON.stringify(valueSet, null, 2), "utf8");
-      console.log(`Saved ValueSet to ${outputFile}`);
-
-      await this.downloadAll(this.#getIncludedValueSetCanonicals(valueSet));
     } catch (error) {
       console.warn(`Couldn't download ValueSet ${canonical}, "${error.message}"`);
     }
@@ -220,47 +178,15 @@ class ValueSetDownloader {
     const canonicals = new Set();
 
     for (const include of valueSet.compose?.include ?? []) {
-      this.#addCanonicals(canonicals, include.valueSet);
+      for (const value of [include.valueSet].flat(Infinity)) {
+        const canonical = ArtDecorDownloader.normalizeCanonical(value);
+        if (canonical) canonicals.add(canonical);
+      }
     }
 
     return Array.from(canonicals);
   }
 
-  #addCanonicals(canonicals, value) {
-    if (Array.isArray(value)) {
-      value.forEach(canonical => this.#addCanonicals(canonicals, canonical));
-      return;
-    }
-
-    const canonical = this.#normalizeCanonical(value);
-    if (canonical) {
-      canonicals.add(canonical);
-    }
-  }
-
-  #normalizeCanonical(canonical) {
-    return typeof canonical == "string" ? canonical.trim() : "";
-  }
-
-  #shouldSkipCanonical(canonical) {
-    return ValueSetDownloader.skippedCanonicalPrefixes.some(prefix => canonical.startsWith(prefix));
-  }
-
-  #toDownloadUrl(canonical) {
-    const resourceUrl = new URL(canonical.split("|")[0]);
-    const searchUrl = new URL(`${serverSourceUrl}/fhir/4.0/${this.adProject}/ValueSet`);
-    searchUrl.searchParams.set("url", resourceUrl);
-    searchUrl.searchParams.set("_format", "json");
-    return searchUrl.toString();
-  }
-
-  #fallbackName(canonical) {
-    return canonical.split("|")[0].split("/").filter(Boolean).pop() || "ValueSet";
-  }
-
-  #safeFileName(fileName) {
-    return fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-  }
 }
 
 class ProfileValueSetCollector {
@@ -452,9 +378,10 @@ async function main() {
     ...(logicalModels ? [logicalModelFolder] : []),
     ...(profiles || (logicalModels && !options.dontDescend) ? [vocabularyFolder] : [])
   ]) fs.mkdirSync(folder, { recursive: true });
+  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder);
   const valueSets = profiles || (logicalModels && !options.dontDescend)
-    ? new ValueSetDownloader(config.adProject, vocabularyFolder) : null;
-  if (actors) await new ArtDecorDownloader(config.adProject, outputFolder).getActorDefinitions();
+    ? new ValueSetDownloader(artDecorDownloader) : null;
+  if (actors) await artDecorDownloader.getActorDefinitions();
   if (logicalModels) {
     const downloader = new LogicalModelDownloader(config.adProject, logicalModelFolder, options.dontDescend ? null : valueSets);
     for (const { adId, fileRoot } of getLogicalModelReferences(inputFolder)) {
