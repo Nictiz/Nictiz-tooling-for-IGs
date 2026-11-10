@@ -87,6 +87,11 @@ class ArtDecorDownloader {
 
   async getValueSet(canonical) {
     const url = new URL(ArtDecorDownloader.normalizeCanonical(canonical));
+    
+    await this.ready;
+    const resources = this.#useCachedResource(this.cacheByCanonical.get(url.toString()), "ValueSet");
+    if (resources !== null) return resources;
+    
     return this.#search("ValueSet", { url: url.toString() });
   }
 
@@ -98,21 +103,8 @@ class ArtDecorDownloader {
     }
     await this.ready;
     const cached = this.cacheByIdentifier.get(adId);
-    const historyDate = this.adEffectiveDates.get(adId);
-    if (cached && historyDate && cached.date === historyDate) {
-      try {
-        const resource = JSON.parse(fs.readFileSync(cached.filePath, "utf8"));
-        if (resource.resourceType !== "StructureDefinition") {
-          throw new Error("Expected StructureDefinition in cache");
-        }
-        const outputFile = this.#prepareOutputFile(resource);
-        fs.copyFileSync(cached.filePath, outputFile);
-        console.log(`Copied cached StructureDefinition to ${outputFile}`);
-        return [resource];
-      } catch (error) {
-        console.warn(`Couldn't use cached logical model ${adId}, "${error.message}"`);
-      }
-    }
+    const resources = this.#useCachedResource(cached, "StructureDefinition");
+    if (resources !== null) return resources;
     
     const date = parts[1].replace(/[-:T]/g, "");
     const id = `${parts[0]}--${date}`;
@@ -120,6 +112,30 @@ class ArtDecorDownloader {
     url.searchParams.set("language", "en-US");
     url.searchParams.set("_format", "json");
     return this.#request("StructureDefinition", url, false);
+  }
+
+  #useCachedResource(cached, resourceType) {
+    const historyDate = cached && this.adEffectiveDates.get(cached.identifier);
+    if (cached && historyDate && cached.date === historyDate) {
+      const requestKey = `cache:${cached.filePath}`;
+      if (this.#completedRequests.has(requestKey)) return [];
+      try {
+        const resource = JSON.parse(fs.readFileSync(cached.filePath, "utf8"));
+        if (resource.resourceType !== resourceType) {
+          throw new Error(`Expected ${resourceType} in cache`);
+        }
+        const outputFile = this.#prepareOutputFile(resource);
+        if (path.resolve(cached.filePath) !== path.resolve(outputFile)) {
+          fs.copyFileSync(cached.filePath, outputFile);
+        }
+        this.#completedRequests.add(requestKey);
+        console.log(`Copied cached ${resourceType} to ${outputFile}`);
+        return [resource];
+      } catch (error) {
+        console.warn(`Couldn't use cached ${resourceType}, "${error.message}"`);
+      }
+    }
+    return null;
   }
 
   /**
