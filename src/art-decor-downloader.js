@@ -9,42 +9,6 @@ const { getLogicalModelReferences } = require("./excel-to-artifacts");
 const translationExtensionUrl = "http://hl7.org/fhir/StructureDefinition/translation";
 const additionalBindingExtensionUrl = "http://hl7.org/fhir/tools/StructureDefinition/additional-binding";
 
-function normalizeLanguageCode(languageCode) {
-  return typeof languageCode === "string" ? languageCode.slice(0, 2) : languageCode;
-}
-
-function normalizeResourceLanguages(resource) {
-  if (!resource || typeof resource !== "object") return resource;
-
-  if (typeof resource.language === "string") {
-    resource.language = normalizeLanguageCode(resource.language);
-  }
-
-  normalizeTranslationExtensionLanguages(resource);
-  return resource;
-}
-
-function normalizeTranslationExtensionLanguages(value) {
-  if (Array.isArray(value)) {
-    value.forEach(item => normalizeTranslationExtensionLanguages(item));
-    return;
-  }
-
-  if (!value || typeof value !== "object") return;
-
-  if (value.url === translationExtensionUrl) {
-    for (const extension of value.extension ?? []) {
-      if (extension?.url === "lang" && typeof extension.valueCode === "string") {
-        extension.valueCode = normalizeLanguageCode(extension.valueCode);
-      }
-    }
-  }
-
-  for (const nestedValue of Object.values(value)) {
-    normalizeTranslationExtensionLanguages(nestedValue);
-  }
-}
-
 class ArtDecorDownloader {
   static normalizeCanonical(canonical) {
     return typeof canonical === "string" ? canonical.split("|")[0].trim() : "";
@@ -121,27 +85,32 @@ class ArtDecorDownloader {
     const requestKey = url.toString();
     if (this.#completedRequests.has(requestKey) || this.#pendingRequests.has(requestKey)) return [];
     this.#pendingRequests.add(requestKey);
+
     try {
       const outputFolder = path.join(this.outputFolder, ArtDecorDownloader.resourceFolders[resourceType]);
       const response = await fetch(requestKey, {
         headers: { "Accept": "application/fhir+json, application/json; fhirVersion=4.0" }
       });
       if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      
       const body = await response.json();
       const expectedType = isSearch ? "Bundle" : resourceType;
       if (body.resourceType !== expectedType) {
         throw new Error(`Expected ${expectedType}, got ${body.resourceType ?? "unknown resource"}`);
       }
+      
       const usedFileNames = new Set();
       const resources = [];
       for (const entry of isSearch ? body.entry ?? [] : [{ resource: body }]) {
         const resource = entry.resource;
-        if (entry.search?.mode === "outcome" || entry.search?.mode === "include" ||
-          resource?.resourceType !== resourceType) continue;
+        if (entry.search?.mode === "outcome" || entry.search?.mode === "include" || resource?.resourceType !== resourceType) continue;
         const outputFile = path.join(outputFolder, this.#constructFileName(resource, usedFileNames));
-        normalizeResourceLanguages(resource);
+        
+        this.#normalizeResourceLanguages(resource);
+        
         fs.mkdirSync(outputFolder, { recursive: true });
         fs.writeFileSync(outputFile, JSON.stringify(resource, null, 2), "utf8");
+        
         resources.push(resource);
         console.log(`Saved ${resourceType} to ${outputFile}`);
       }
@@ -172,6 +141,42 @@ class ArtDecorDownloader {
 
   #safeFileName(fileName) {
     return fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+  }
+
+  #normalizeLanguageCode(languageCode) {
+    return typeof languageCode === "string" ? languageCode.slice(0, 2) : languageCode;
+  }
+
+  #normalizeResourceLanguages(resource) {
+    if (!resource || typeof resource !== "object") return resource;
+
+    if (typeof resource.language === "string") {
+      resource.language = this.#normalizeLanguageCode(resource.language);
+    }
+
+    this.#normalizeTranslationExtensionLanguages(resource);
+    return resource;
+  }
+
+  #normalizeTranslationExtensionLanguages(value) {
+    if (Array.isArray(value)) {
+      value.forEach(item => this.#normalizeTranslationExtensionLanguages(item));
+      return;
+    }
+
+    if (!value || typeof value !== "object") return;
+
+    if (value.url === translationExtensionUrl) {
+      for (const extension of value.extension ?? []) {
+        if (extension?.url === "lang" && typeof extension.valueCode === "string") {
+          extension.valueCode = this.#normalizeLanguageCode(extension.valueCode);
+        }
+      }
+    }
+
+    for (const nestedValue of Object.values(value)) {
+      this.#normalizeTranslationExtensionLanguages(nestedValue);
+    }
   }
 }
 
