@@ -32,8 +32,12 @@ class ArtDecorDownloader {
     this.cacheFolder = cacheFolder;
     this.cache = new Map();
     this.adEffectiveDates = new Map();
-    this.#scanCache(path.resolve(cacheFolder));
-    this.ready = this.#loadADHistory();
+    if (cacheFolder) {
+      this.#scanCache(path.resolve(cacheFolder));
+      this.ready = this.#loadADHistory();
+    } else {
+      this.ready = Promise.resolve();
+    }
   }
 
   #scanCache(folder) {
@@ -433,7 +437,7 @@ async function main() {
     .option("--actors", "Download ActorDefinitions from ART-DECOR")
     .option("--lm", "Download logical models referenced by Excel workbooks")
     .option("--profile-artifacts", "Download ValueSets referenced by profiles")
-    .option("--cache-folder <folder>", "Folder to scan for cached FHIR resources (defaults to outputFolder)")
+    .option("--cache-folder <folder>", "Folder to scan for cached FHIR resources; caching is disabled when omitted")
     .addOption(new commander.Option("--dont-descend", "Do not download ValueSets referenced by logical models").conflicts("profile-artifacts"))
     .argument("<inputFolder>")
     .argument("<outputFolder>")
@@ -448,7 +452,7 @@ async function main() {
   const config = parseSushiYaml();
   if (!config.adProject) throw new Error("No ART-DECOR project configured in sushi-config.yaml");
   
-  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder ?? outputFolder);
+  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder);
   await artDecorDownloader.ready;
   const valueSetDownloader = doProfiles || (doLogicalModels && !options.dontDescend)
     ? new ValueSetDownloader(artDecorDownloader) : null;
