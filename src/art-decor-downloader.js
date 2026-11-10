@@ -387,34 +387,27 @@ async function main() {
     .parse();
   const options = commander.program.opts();
   const [inputFolder, outputFolder] = commander.program.args;
-  const all = !options.actors && !options.lm && !options.profileArtifacts;
-  const actors = all || options.actors;
-  const logicalModels = all || options.lm;
-  const profiles = (all && !options.dontDescend) || options.profileArtifacts;
+  const doAll = !options.actors && !options.lm && !options.profileArtifacts;
+  const doActors = doAll || options.actors;
+  const doLogicalModels = doAll || options.lm;
+  const doProfiles = (doAll && !options.dontDescend) || options.profileArtifacts;
+  
   const config = parseSushiYaml();
   if (!config.adProject) throw new Error("No ART-DECOR project configured in sushi-config.yaml");
-  const resourcesFolder = path.join(outputFolder, "resources");
-  const logicalModelFolder = path.join(outputFolder, "logicalmodels");
-  const vocabularyFolder = path.join(outputFolder, "vocabulary");
-  // Preserve files produced by other commands and download actions.
-  for (const folder of [
-    ...(actors ? [resourcesFolder] : []),
-    ...(logicalModels ? [logicalModelFolder] : []),
-    ...(profiles || (logicalModels && !options.dontDescend) ? [vocabularyFolder] : [])
-  ]) fs.mkdirSync(folder, { recursive: true });
+  
   const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder);
-  const valueSets = profiles || (logicalModels && !options.dontDescend)
+  const valueSetDownloader = doProfiles || (doLogicalModels && !options.dontDescend)
     ? new ValueSetDownloader(artDecorDownloader) : null;
-  if (actors) await artDecorDownloader.getActorDefinitions();
-  if (logicalModels) {
-    const downloader = new LogicalModelDownloader(artDecorDownloader, options.dontDescend ? null : valueSets);
+  if (doActors) await artDecorDownloader.getActorDefinitions();
+  if (doLogicalModels) {
+    const downloader = new LogicalModelDownloader(artDecorDownloader, options.dontDescend ? null : valueSetDownloader);
     for (const { adId } of getLogicalModelReferences(inputFolder)) {
       await downloader.download(adId);
     }
   }
-  if (profiles) {
+  if (doProfiles) {
     const collector = new ProfileValueSetCollector(path.join(inputFolder, "profiles"));
-    await valueSets.downloadAll(collector.getBindingValueSetCanonicals());
+    await valueSetDownloader.downloadAll(collector.getBindingValueSetCanonicals());
   }
 }
 
