@@ -30,42 +30,35 @@ class ArtDecorDownloader {
     this.outputFolder = outputFolder;
     this.serverSourceUrl = serverSourceUrl;
     this.cacheFolder = cacheFolder;
-    this.cache = new Map();
+    this.cacheByCanonical = new Map();
+    this.cacheByIdentifier = new Map();
     this.adEffectiveDates = new Map();
     if (cacheFolder) {
-      this.#scanCache(path.resolve(cacheFolder));
+      this.#loadCache();
       this.ready = this.#loadADHistory();
     } else {
       this.ready = Promise.resolve();
     }
   }
 
-  #scanCache(folder) {
-    if (!fs.existsSync(folder)) return;
-    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
-      const filePath = path.join(folder, entry.name);
-      if (entry.isDirectory()) {
-        this.#scanCache(filePath);
-        continue;
+  #loadCache() {
+    const folder = path.resolve(this.cacheFolder);
+    const indexFile = path.join(folder, "cache.json");
+    if (!fs.existsSync(indexFile)) return;
+    try {
+      const index = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+      for (const [canonical, entry] of Object.entries(index)) {
+        const cacheEntry = {
+          ...entry,
+          filePath: path.resolve(folder, entry.filePath)
+        };
+        this.cacheByCanonical.set(canonical, cacheEntry);
+        this.cacheByIdentifier.set(cacheEntry.identifier, cacheEntry);
       }
-      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") continue;
-      try {
-        const resource = JSON.parse(fs.readFileSync(filePath, "utf8"));
-        const identifier = resource?.identifier?.find(item =>
-          item.use === "official" && item.system === "urn:ietf:rfc:3986" && item.value);
-        const effectiveDate = resource?.extension?.find(extension =>
-          extension.url === "http://hl7.org/fhir/StructureDefinition/resource-effectivePeriod"
-          && extension.valuePeriod?.start)?.valuePeriod.start;
-        if (!resource?.resourceType || !resource.url || !identifier || !effectiveDate) continue;
-        this.cache.set(resource.url, {
-          filePath,
-          resourceType: resource.resourceType,
-          identifier: identifier.value.replace(/^urn:oid:/, ""),
-          effectiveDate
-        });
-      } catch (error) {
-        console.warn(`Couldn't read cached resource ${filePath}, "${error.message}"`);
-      }
+    } catch (error) {
+      this.cacheByCanonical.clear();
+      this.cacheByIdentifier.clear();
+      console.warn(`Couldn't read cache index ${indexFile}, "${error.message}"`);
     }
   }
 
@@ -78,11 +71,12 @@ class ArtDecorDownloader {
     if (!Array.isArray(body.history)) throw new Error("Expected an ART-DECOR history array");
     
     for (const entry of body.history) {
-      const { artefactId, artefactEffectiveDate } = entry;
-      if (!artefactId || !artefactEffectiveDate) continue;
-      const previous = this.adEffectiveDates.get(artefactId);
-      if (!previous || artefactEffectiveDate > previous) {
-        this.adEffectiveDates.set(artefactId, artefactEffectiveDate);
+      const { artefactId, artefactEffectiveDate, date } = entry;
+      if (!artefactId || !artefactEffectiveDate || !date) continue;
+      const key = `${artefactId}/${artefactEffectiveDate}`;
+      const previous = this.adEffectiveDates.get(key);
+      if (!previous || date > previous) {
+        this.adEffectiveDates.set(key, date);
       }
     }
   }
@@ -102,6 +96,24 @@ class ArtDecorDownloader {
       console.warn(`Skipping logical model: invalid ART-DECOR ID "${adId}"`);
       return [];
     }
+    await this.ready;
+    const cached = this.cacheByIdentifier.get(adId);
+    const historyDate = this.adEffectiveDates.get(adId);
+    if (cached && historyDate && cached.date === historyDate) {
+      try {
+        const resource = JSON.parse(fs.readFileSync(cached.filePath, "utf8"));
+        if (resource.resourceType !== "StructureDefinition") {
+          throw new Error("Expected StructureDefinition in cache");
+        }
+        const outputFile = this.#prepareOutputFile(resource);
+        fs.copyFileSync(cached.filePath, outputFile);
+        console.log(`Copied cached StructureDefinition to ${outputFile}`);
+        return [resource];
+      } catch (error) {
+        console.warn(`Couldn't use cached logical model ${adId}, "${error.message}"`);
+      }
+    }
+    
     const date = parts[1].replace(/[-:T]/g, "");
     const id = `${parts[0]}--${date}`;
     const url = new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/StructureDefinition/${encodeURIComponent(id)}`);
@@ -143,7 +155,7 @@ class ArtDecorDownloader {
     this.#pendingRequests.add(requestKey);
 
     try {
-      const outputFolder = path.join(this.outputFolder, ArtDecorDownloader.resourceFolders[resourceType]);
+      await this.ready;
       const response = await fetch(requestKey, {
         headers: { "Accept": "application/fhir+json, application/json; fhirVersion=4.0" }
       });
@@ -160,12 +172,12 @@ class ArtDecorDownloader {
       for (const entry of isSearch ? body.entry ?? [] : [{ resource: body }]) {
         const resource = entry.resource;
         if (entry.search?.mode === "outcome" || entry.search?.mode === "include" || resource?.resourceType !== resourceType) continue;
-        const outputFile = path.join(outputFolder, this.#constructFileName(resource, usedFileNames));
+        const outputFile = this.#prepareOutputFile(resource, usedFileNames);
         
         this.#normalizeResourceLanguages(resource);
         
-        fs.mkdirSync(outputFolder, { recursive: true });
         fs.writeFileSync(outputFile, JSON.stringify(resource, null, 2), "utf8");
+        if (this.cacheFolder) this.#cacheResource(resource, outputFile);
         
         resources.push(resource);
         console.log(`Saved ${resourceType} to ${outputFile}`);
@@ -178,6 +190,43 @@ class ArtDecorDownloader {
     } finally {
       this.#pendingRequests.delete(requestKey);
     }
+  }
+
+  #cacheResource(resource, outputFile) {
+    const officialIdentifier = resource.identifier?.find(identifier =>
+      identifier.use === "official" && identifier.system === "urn:ietf:rfc:3986")?.value;
+    const effectiveDate = resource.extension?.find(extension =>
+      extension.url === "http://hl7.org/fhir/StructureDefinition/resource-effectivePeriod")?.valuePeriod?.start;
+    const version = effectiveDate?.replace(/Z$/, "") || resource.version;
+    const identifier = officialIdentifier && version
+      ? `${officialIdentifier.replace(/^urn:oid:/, "")}/${version}` : null;
+    const date = identifier && this.adEffectiveDates.get(identifier);
+    if (!resource.url || !identifier || !date) {
+      console.warn(`Skipping cache for ${resource.resourceType}: missing canonical, identifier, version, or history date`);
+      return;
+    }
+    const folder = path.resolve(this.cacheFolder);
+    const fileName = path.basename(outputFile);
+    const filePath = path.join(folder, ArtDecorDownloader.resourceFolders[resource.resourceType], fileName);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    if (path.resolve(outputFile) !== filePath) fs.copyFileSync(outputFile, filePath);
+
+    const cacheEntry = { filePath, resourceType: resource.resourceType, identifier, effectiveDate, date };
+    const previous = this.cacheByCanonical.get(resource.url);
+    if (previous) this.cacheByIdentifier.delete(previous.identifier);
+    this.cacheByCanonical.set(resource.url, cacheEntry);
+    this.cacheByIdentifier.set(identifier, cacheEntry);
+
+    const index = Object.fromEntries(Array.from(this.cacheByCanonical, ([canonical, entry]) =>
+      [canonical, { ...entry, filePath: path.relative(folder, entry.filePath) }]));
+    fs.writeFileSync(path.join(folder, "cache.json"), JSON.stringify(index, null, 2), "utf8");
+  }
+
+  #prepareOutputFile(resource, usedFileNames = new Set()) {
+    const outputFolder = path.join(this.outputFolder, ArtDecorDownloader.resourceFolders[resource.resourceType]);
+    const outputFile = path.join(outputFolder, this.#constructFileName(resource, usedFileNames));
+    fs.mkdirSync(outputFolder, { recursive: true });
+    return outputFile;
   }
 
   #constructFileName(resource, usedFileNames) {
@@ -437,7 +486,7 @@ async function main() {
     .option("--actors", "Download ActorDefinitions from ART-DECOR")
     .option("--lm", "Download logical models referenced by Excel workbooks")
     .option("--profile-artifacts", "Download ValueSets referenced by profiles")
-    .option("--cache-folder <folder>", "Folder to scan for cached FHIR resources; caching is disabled when omitted")
+    .option("--cache-folder <folder>", "Folder containing cache.json and cached FHIR resources; caching is disabled when omitted")
     .addOption(new commander.Option("--dont-descend", "Do not download ValueSets referenced by logical models").conflicts("profile-artifacts"))
     .argument("<inputFolder>")
     .argument("<outputFolder>")
