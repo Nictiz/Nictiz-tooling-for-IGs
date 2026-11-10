@@ -23,12 +23,64 @@ class ArtDecorDownloader {
   #completedRequests = new Set();
   #pendingRequests = new Set();
 
-  constructor(adProject, outputFolder, serverSourceUrl = "https://decor.nictiz.nl") {
+  constructor(adProject, outputFolder, cacheFolder, serverSourceUrl = "https://decor.nictiz.nl") {
     if (!adProject) throw new Error("No ART-DECOR project defined for downloading FHIR artifacts");
     if (!outputFolder) throw new Error("No output folder defined for downloading FHIR artifacts");
     this.adProject = adProject;
     this.outputFolder = outputFolder;
     this.serverSourceUrl = serverSourceUrl;
+    this.cacheFolder = cacheFolder;
+    this.cache = new Map();
+    this.adEffectiveDates = new Map();
+    this.#scanCache(path.resolve(cacheFolder));
+    this.ready = this.#loadADHistory();
+  }
+
+  #scanCache(folder) {
+    if (!fs.existsSync(folder)) return;
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      const filePath = path.join(folder, entry.name);
+      if (entry.isDirectory()) {
+        this.#scanCache(filePath);
+        continue;
+      }
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") continue;
+      try {
+        const resource = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const identifier = resource?.identifier?.find(item =>
+          item.use === "official" && item.system === "urn:ietf:rfc:3986" && item.value);
+        const effectiveDate = resource?.extension?.find(extension =>
+          extension.url === "http://hl7.org/fhir/StructureDefinition/resource-effectivePeriod"
+          && extension.valuePeriod?.start)?.valuePeriod.start;
+        if (!resource?.resourceType || !resource.url || !identifier || !effectiveDate) continue;
+        this.cache.set(resource.url, {
+          filePath,
+          resourceType: resource.resourceType,
+          identifier: identifier.value.replace(/^urn:oid:/, ""),
+          effectiveDate
+        });
+      } catch (error) {
+        console.warn(`Couldn't read cached resource ${filePath}, "${error.message}"`);
+      }
+    }
+  }
+
+  async #loadADHistory() {
+    const url = `${this.serverSourceUrl}/exist/apps/api/project/${encodeURIComponent(this.adProject)}/history`;
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`Couldn't load ART-DECOR history: HTTP ${response.status} ${response.statusText}`);
+    
+    const body = await response.json();
+    if (!Array.isArray(body.history)) throw new Error("Expected an ART-DECOR history array");
+    
+    for (const entry of body.history) {
+      const { artefactId, artefactEffectiveDate } = entry;
+      if (!artefactId || !artefactEffectiveDate) continue;
+      const previous = this.adEffectiveDates.get(artefactId);
+      if (!previous || artefactEffectiveDate > previous) {
+        this.adEffectiveDates.set(artefactId, artefactEffectiveDate);
+      }
+    }
   }
   
   async getActorDefinitions() {
@@ -381,6 +433,7 @@ async function main() {
     .option("--actors", "Download ActorDefinitions from ART-DECOR")
     .option("--lm", "Download logical models referenced by Excel workbooks")
     .option("--profile-artifacts", "Download ValueSets referenced by profiles")
+    .option("--cache-folder <folder>", "Folder to scan for cached FHIR resources (defaults to outputFolder)")
     .addOption(new commander.Option("--dont-descend", "Do not download ValueSets referenced by logical models").conflicts("profile-artifacts"))
     .argument("<inputFolder>")
     .argument("<outputFolder>")
@@ -395,7 +448,8 @@ async function main() {
   const config = parseSushiYaml();
   if (!config.adProject) throw new Error("No ART-DECOR project configured in sushi-config.yaml");
   
-  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder);
+  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder ?? outputFolder);
+  await artDecorDownloader.ready;
   const valueSetDownloader = doProfiles || (doLogicalModels && !options.dontDescend)
     ? new ValueSetDownloader(artDecorDownloader) : null;
   if (doActors) await artDecorDownloader.getActorDefinitions();
