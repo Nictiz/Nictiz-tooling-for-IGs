@@ -4,56 +4,14 @@ const XLSX = require("xlsx");
 const fs = require("fs");
 const path = require("path");
 const commander = require("commander");
-const YAML = require("yaml");
+const { parseSushiYaml } = require("./ig-config");
 
-const serverSourceUrl = "https://decor.nictiz.nl";
 const translationExtensionUrl = "http://hl7.org/fhir/StructureDefinition/translation";
-const additionalBindingExtensionUrl = "http://hl7.org/fhir/tools/StructureDefinition/additional-binding";
-
-function normalizeLanguageCode(languageCode) {
-  return typeof languageCode === "string" ? languageCode.slice(0, 2) : languageCode;
-}
-
-function normalizeResourceLanguages(resource) {
-  if (!resource || typeof resource !== "object") return resource;
-
-  if (typeof resource.language === "string") {
-    resource.language = normalizeLanguageCode(resource.language);
-  }
-
-  normalizeTranslationExtensionLanguages(resource);
-  return resource;
-}
-
-function normalizeTranslationExtensionLanguages(value) {
-  if (Array.isArray(value)) {
-    value.forEach(item => normalizeTranslationExtensionLanguages(item));
-    return;
-  }
-
-  if (!value || typeof value !== "object") return;
-
-  if (value.url === translationExtensionUrl) {
-    for (const extension of value.extension ?? []) {
-      if (extension?.url === "lang" && typeof extension.valueCode === "string") {
-        extension.valueCode = normalizeLanguageCode(extension.valueCode);
-      }
-    }
-  }
-
-  for (const nestedValue of Object.values(value)) {
-    normalizeTranslationExtensionLanguages(nestedValue);
-  }
-}
 
 class TargetFolders {
   static subfolders = {
-    "ActorDefinitions":     "logicalmodels",
     "RequirementResources": "requirements",
     "PageContent":          "pagecontent",
-    "LogicalModels":        "logicalmodels",
-    "Vocabulary":           "vocabulary",
-    "Resources":            "resources"
   }
 
   constructor(baseFolder) {
@@ -69,304 +27,6 @@ class TargetFolders {
 
   get(subfolderType) {
     return path.join(this.baseFolder, TargetFolders.subfolders[subfolderType]);
-  }
-}
-
-class ActorDefinitionDownloader {
-  constructor(adProject, outputFolder) {
-    if (!adProject) {
-      console.error("No ART-DECOR project specified as source for the ActorDefinitions");
-      process.exit(1);
-    }
-    this.adProject = adProject;
-    this.outputFolder = outputFolder;
-  }
-
-  async downloadAll() {
-    try {
-      const actorDefinitionsUrl = `${serverSourceUrl}/fhir/4.0/${this.adProject}/ActorDefinition?publisher=${this.adProject}&_format=json`;
-      const body = await this.#fetchJson(actorDefinitionsUrl);
-      const usedFileNames = new Set();
-
-      for (const actorDefinition of this.#getActorDefinitions(body)) {
-        const outputFile = path.join(this.outputFolder, this.#getFileName(actorDefinition, usedFileNames));
-        
-        normalizeResourceLanguages(actorDefinition);
-        
-        fs.writeFileSync(outputFile, JSON.stringify(actorDefinition, null, 2), "utf8");
-        console.log(`Saved ActorDefinition to ${outputFile}`);
-      }
-    } catch (error) {
-      console.warn(`Couldn't download ActorDefinitions from ART-DECOR, "${error.message}"`);
-    }
-  }
-
-  async #fetchJson(url) {
-    const response = await fetch(url, {
-      headers: {
-        "Accept": "application/fhir+json, application/json; fhirVersion=4.0"
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}`);
-    }
-
-    return response.json();
-  }
-
-  #getActorDefinitions(body) {
-    if (body.resourceType == "ActorDefinition") {
-      return [body];
-    }
-
-    if (body.resourceType != "Bundle") {
-      throw new Error(`Expected Bundle, got ${body.resourceType ?? "unknown resource"}`);
-    }
-
-    return (body.entry ?? [])
-      .map(entry => entry.resource)
-      .filter(resource => resource?.resourceType == "ActorDefinition");
-  }
-
-  #getFileName(actorDefinition, usedFileNames) {
-    const actorDefinitionName = actorDefinition.name || actorDefinition.id || "ActorDefinition";
-    const baseFileName = `ActorDefinition-${this.#safeFileName(actorDefinitionName)}.json`;
-
-    if (!usedFileNames.has(baseFileName)) {
-      usedFileNames.add(baseFileName);
-      return baseFileName;
-    }
-
-    const fallbackName = actorDefinition.id || actorDefinition.url?.split("/").filter(Boolean).pop() || "duplicate";
-    const duplicateFileName = `ActorDefinition-${this.#safeFileName(actorDefinitionName)}-${this.#safeFileName(fallbackName)}.json`;
-    usedFileNames.add(duplicateFileName);
-    console.warn(`Duplicate ActorDefinition name "${actorDefinitionName}"; saved duplicate as ${duplicateFileName}`);
-    return duplicateFileName;
-  }
-
-  #safeFileName(fileName) {
-    return fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-  }
-}
-
-class ValueSetDownloader {
-  static skippedCanonicalPrefixes = [
-    "http://hl7.org",
-    "http://terminology.hl7.org",
-    "http://decor.nictiz.nl",
-    "http://terminology.ehdsi.eu",
-    "https://specifications.openehr.org"
-  ];
-
-  constructor(adProject, outputFolder) {
-    if (!adProject) {
-      console.error("No ART-DECOR project defined for downloading ValueSets");
-      process.exit(1);
-    }
-    this.adProject = adProject;
-    this.outputFolder = outputFolder;
-    this.downloadedCanonicals = new Set();
-    this.pendingDownloads = new Map();
-  }
-
-  async downloadAll(canonicals) {
-    for (const canonical of canonicals) {
-      await this.download(canonical);
-    }
-  }
-
-  async download(canonical) {
-    const normalizedCanonical = this.#normalizeCanonical(canonical);
-    if (
-      !normalizedCanonical ||
-      this.#shouldSkipCanonical(normalizedCanonical) ||
-      this.downloadedCanonicals.has(normalizedCanonical)
-    ) return;
-
-    if (this.pendingDownloads.has(normalizedCanonical)) {
-      await this.pendingDownloads.get(normalizedCanonical);
-      return;
-    }
-
-    const download = this.#download(normalizedCanonical)
-      .finally(() => this.pendingDownloads.delete(normalizedCanonical));
-
-    this.pendingDownloads.set(normalizedCanonical, download);
-    await download;
-  }
-
-  async #download(canonical) {
-    this.downloadedCanonicals.add(canonical);
-
-    try {
-      const response = await fetch(this.#toDownloadUrl(canonical), {
-        headers: {
-          "Accept": "application/fhir+json, application/json; fhirVersion=4.0"
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${response.statusText}`);
-      }
-
-      const bundle = await response.json();
-      if (bundle.resourceType != "Bundle") {
-        throw new Error(`Expected Bundle, got ${bundle.resourceType ?? "unknown resource"}`);
-      }
-      if (bundle.total < 1) {
-        console.error(`Couldn't download ValueSet ${canonical}. Bundle turned up empty for request ${this.#toDownloadUrl(canonical)}`);
-        return;
-      } else if (bundle.total > 1) {
-        console.warn(`Multiple ValueSets are present with canonical ${canonical}. Downloading the first one.`);
-      }
-      const valueSet = bundle.entry[0].resource;
-      if (valueSet.resourceType != "ValueSet") {
-        throw new Error(`Expected ValueSet, got ${valueSet.resourceType ?? "unknown resource"}`);
-      }
-
-      const outputFile = path.join(
-        this.outputFolder,
-        `${this.#safeFileName(valueSet.name || valueSet.id || this.#fallbackName(canonical))}.json`
-      );
-      
-      normalizeResourceLanguages(valueSet);
-
-      fs.writeFileSync(outputFile, JSON.stringify(valueSet, null, 2), "utf8");
-      console.log(`Saved ValueSet to ${outputFile}`);
-
-      await this.downloadAll(this.#getIncludedValueSetCanonicals(valueSet));
-    } catch (error) {
-      console.warn(`Couldn't download ValueSet ${canonical}, "${error.message}"`);
-    }
-  }
-
-  #getIncludedValueSetCanonicals(valueSet) {
-    const canonicals = new Set();
-
-    for (const include of valueSet.compose?.include ?? []) {
-      this.#addCanonicals(canonicals, include.valueSet);
-    }
-
-    return Array.from(canonicals);
-  }
-
-  #addCanonicals(canonicals, value) {
-    if (Array.isArray(value)) {
-      value.forEach(canonical => this.#addCanonicals(canonicals, canonical));
-      return;
-    }
-
-    const canonical = this.#normalizeCanonical(value);
-    if (canonical) {
-      canonicals.add(canonical);
-    }
-  }
-
-  #normalizeCanonical(canonical) {
-    return typeof canonical == "string" ? canonical.trim() : "";
-  }
-
-  #shouldSkipCanonical(canonical) {
-    return ValueSetDownloader.skippedCanonicalPrefixes.some(prefix => canonical.startsWith(prefix));
-  }
-
-  #toDownloadUrl(canonical) {
-    const resourceUrl = new URL(canonical.split("|")[0]);
-    const searchUrl = new URL(`${serverSourceUrl}/fhir/4.0/${this.adProject}/ValueSet`);
-    searchUrl.searchParams.set("url", resourceUrl);
-    searchUrl.searchParams.set("_format", "json");
-    return searchUrl.toString();
-  }
-
-  #fallbackName(canonical) {
-    return canonical.split("|")[0].split("/").filter(Boolean).pop() || "ValueSet";
-  }
-
-  #safeFileName(fileName) {
-    return fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-  }
-}
-
-class ProfileValueSetCollector {
-  constructor(profileFolder) {
-    this.profileFolder = profileFolder;
-  }
-
-  getBindingValueSetCanonicals() {
-    if (!fs.existsSync(this.profileFolder)) return [];
-
-    const canonicals = new Set();
-    for (const profileFile of this.#getXmlFiles(this.profileFolder)) {
-      try {
-        this.#addBindingValueSetCanonicals(
-          canonicals,
-          fs.readFileSync(profileFile, "utf8")
-        );
-      } catch (error) {
-        console.warn(`Couldn't read bindings from profile ${profileFile}, "${error.message}"`);
-      }
-    }
-
-    return Array.from(canonicals);
-  }
-
-  #getXmlFiles(folder) {
-    const files = [];
-
-    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
-      const entryPath = path.join(folder, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...this.#getXmlFiles(entryPath));
-      } else if (entry.isFile() && path.extname(entry.name).toLowerCase() == ".xml") {
-        files.push(entryPath);
-      }
-    }
-
-    return files;
-  }
-
-  #addBindingValueSetCanonicals(canonicals, xml) {
-    const xmlWithoutComments = xml.replace(/<!--[\s\S]*?-->/g, "");
-    const bindingPattern = /<(?:[\w.-]+:)?binding\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?binding\s*>/gi;
-
-    for (const bindingMatch of xmlWithoutComments.matchAll(bindingPattern)) {
-      const bindingXml = bindingMatch[1];
-
-      // Covers regular bindings and valueCanonical/valueUri primitives in
-      // additional-binding extensions.
-      const valuePattern = /<(?:[\w.-]+:)?(?:valueSet|valueSetCanonical|valueSetUri|valueCanonical|valueUri)\b[^>]*\bvalue\s*=\s*(["'])(.*?)\1/gi;
-      for (const valueMatch of bindingXml.matchAll(valuePattern)) {
-        this.#addCanonical(canonicals, valueMatch[2]);
-      }
-
-      // Older FHIR profiles may express a binding as valueSetReference.
-      const referenceBlockPattern = /<(?:[\w.-]+:)?valueSetReference\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?valueSetReference\s*>/gi;
-      for (const referenceBlockMatch of bindingXml.matchAll(referenceBlockPattern)) {
-        const referencePattern = /<(?:[\w.-]+:)?reference\b[^>]*\bvalue\s*=\s*(["'])(.*?)\1/gi;
-        for (const referenceMatch of referenceBlockMatch[1].matchAll(referencePattern)) {
-          this.#addCanonical(canonicals, referenceMatch[2]);
-        }
-      }
-    }
-  }
-
-  #addCanonical(canonicals, canonical) {
-    const decodedCanonical = this.#decodeXmlAttribute(canonical).trim();
-    if (decodedCanonical) {
-      canonicals.add(decodedCanonical);
-    }
-  }
-
-  #decodeXmlAttribute(value) {
-    return value
-      .replace(/&#x([0-9a-f]+);/gi, (_match, codePoint) => String.fromCodePoint(parseInt(codePoint, 16)))
-      .replace(/&#([0-9]+);/g, (_match, codePoint) => String.fromCodePoint(parseInt(codePoint, 10)))
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&amp;/g, "&");
   }
 }
 
@@ -536,7 +196,7 @@ class ExcelConvertor {
     }
   }
 
-  constructor(inputFile, targetFolders, valueSetDownloader, canonicalBase) {
+  constructor(inputFile, targetFolders, canonicalBase) {
     this.inputFile = inputFile;
     this.fileRoot = path.basename(inputFile.name, path.extname(inputFile.name));
     this.workbook = XLSX.readFile(path.join(inputFile.parentPath, inputFile.name));
@@ -549,7 +209,6 @@ class ExcelConvertor {
 
     this.sources = this.#getSources();
     this.targetFolders = targetFolders;
-    this.valueSetDownloader = valueSetDownloader;
     this.canonicalBase = canonicalBase;
   }
 
@@ -663,14 +322,11 @@ class ExcelConvertor {
     console.log(`Wrote ${outputFile}`);
   }
 
-  async getLogicalModel(adProject) {
-    if (!adProject) {
-      console.error("No ART-DECOR project defined for downloading logical models");
-      process.exit(1);
-    }
+  getLogicalModelId() {
+    if (this.templateVersion == null) return null;
     const struct = ExcelConvertor.structConcept[this.templateVersion]["nl"];
     let rows = this.#getRows(struct.sheet);
-    if (rows == null) return;
+    if (rows == null) return null;
     
     rows = rows.filter(row => this.#cell(row, struct.col.field) == struct.key.ADId);
     let ad_id = "";
@@ -679,32 +335,10 @@ class ExcelConvertor {
     }
     if (ad_id == "") {
       console.warn(`Skipping logical model for ${this.inputFile.name}: "${struct.key.ADId}" is empty or absent`);
-      return;
+      return null;
     } 
     
-    const id_parts = ad_id.split("/");
-    const id_date = id_parts[1].replace(/-/g, "").replace(/:/g, "").replace("T", "");
-    const fetch_url = `${serverSourceUrl}/fhir/4.0/${adProject}/StructureDefinition/${id_parts[0]}--${id_date}?_format=json&language=en-US`;
-    try {
-      const response = await fetch(`${fetch_url}`);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${response.statusText} - ${fetch_url}`);
-      }
-
-      const body = await response.json();
-      normalizeResourceLanguages(body);
-      
-      const outputFile = path.join(this.targetFolders.get("LogicalModels"), this.fileRoot + ".json");
-      fs.writeFileSync(outputFile, JSON.stringify(body, null, 2), 'utf8');
-      console.log(`Saved LogicalModel to ${outputFile}`);
-
-      if (this.valueSetDownloader) {
-        await this.valueSetDownloader.downloadAll(this.#getBindingValueSetCanonicals(body));
-      }
-    } catch (error) {
-      console.warn(`Couldn't download logical model for ${this.inputFile.name} from ART-DECOR using ${fetch_url}, "${error.message}"`);
-      return;
-    }
+    return ad_id;
   }
 
   #getTemplateVersion() {
@@ -900,152 +534,44 @@ class ExcelConvertor {
     return sources;
   }
 
-  #getBindingValueSetCanonicals(structureDefinition) {
-    const canonicals = new Set();
 
-    for (const element of [
-      ...(structureDefinition.snapshot?.element ?? []),
-      ...(structureDefinition.differential?.element ?? [])
-    ]) {
-      const binding = element.binding;
-      if (!binding) continue;
-
-      this.#addCanonicals(canonicals, binding.valueSet);
-      this.#addCanonicals(canonicals, binding.valueSetCanonical);
-      this.#addCanonicals(canonicals, binding.valueSetUri);
-      this.#addCanonicals(canonicals, binding.valueSetReference?.reference);
-
-      for (const extension of binding.extension ?? []) {
-        if (extension?.url !== additionalBindingExtensionUrl) continue;
-
-        for (const nestedExtension of extension.extension ?? []) {
-          if (nestedExtension?.url !== "valueSet") continue;
-
-          this.#addCanonicals(canonicals, nestedExtension.valueCanonical);
-          this.#addCanonicals(canonicals, nestedExtension.valueUri);
-          this.#addCanonicals(canonicals, nestedExtension.valueReference?.reference);
-        }
-      }
-    }
-
-    return Array.from(canonicals);
-  }
-
-  #addCanonicals(canonicals, value) {
-    if (Array.isArray(value)) {
-      value.forEach(canonical => this.#addCanonicals(canonicals, canonical));
-      return;
-    }
-
-    if (typeof value == "string" && value.trim()) {
-      canonicals.add(value.trim());
-    }
-  }
 }
 
-function parseSushiYaml() {
-  const configPath = path.resolve("sushi-config.yaml");
+function getExcelFiles(folder) {
+  if (!fs.existsSync(folder)) return [];
+  return fs.readdirSync(folder, { withFileTypes: true })
+    .filter(file => file.isFile() && /\.(xlsx|xlsm|xls)$/i.test(file.name) && !file.name.startsWith("~$"))
+    .map(file => ({ name: file.name, parentPath: folder }));
+}
 
-  if (!fs.existsSync(configPath)) {
-    console.error(`Config file not found: ${configPath}`);
-    process.exit(1);
+function getLogicalModelReferences(inputFolder) {
+  const references = [];
+  for (const file of getExcelFiles(inputFolder)) {
+    const convertor = new ExcelConvertor(file);
+    const adId = convertor.getLogicalModelId();
+    if (adId) references.push({ adId, fileRoot: convertor.fileRoot });
   }
-
-  let canonical = null;
-  let adProject = null;
-  try {
-    const text = fs.readFileSync(configPath, "utf8");
-    const config = YAML.parse(text);
-
-    if (!"canonical" in config) {
-      console.error("The canonical of this IG is not defined in sushi-config.yaml!");
-    }
-    canonical = config["canonical"];
-
-    const igConfig = config?.["nictizIgConfig"];
-
-    if (igConfig && Object.prototype.hasOwnProperty.call(igConfig, "ad-project")) {
-      adProject = igConfig["ad-project"];
-    } else {
-      console.warn('Warning: there is no ART-DECOR project configured in sushi-config.yaml. Use the "ad-project" parameter in section "nictizIgCconfig" to do so.');
-      adProject = null;
-    }
-  } catch (error) {
-    console.error(`Could not read or parse ${configPath}: ${error.message}`);
-    process.exit(1);
-  }
-
-  return {
-    "canonicalBase": canonical,
-    "adProject": adProject
-  };
+  return references;
 }
 
 async function main() {
   commander.program
-    .option("--requirements", "Create Requirements resources from Excel")
-    .option("--actors", "Download ActorDefinitions from ART-DECOR")
-    .option("--lm", "Download logical model StructureDefinitions from ART-DECOR")
-    .option("--profile-artifacts", "Download referenced artifacts on ART-DECOR from profiles")
-    .addOption(new commander.Option("--dont-descend", "When downloading material from ART-DECOR, don't download materials included from those materials").conflicts("profile-artifacts"))
-    .argument('<inputFolder>')
-    .argument('<outputFolder>')
-  commander.program.parse()
-
+    .argument("<inputFolder>")
+    .argument("<outputFolder>")
+    .parse();
   const config = parseSushiYaml();
-
-  const inputFolder = commander.program.args[0];
-  const outputFolder = commander.program.args[1];
-
-  let createRequirements = commander.program.opts()['requirements'];
-  let downloadActors = commander.program.opts()['actors'];
-  let downloadLogicalModels = commander.program.opts()['lm'];
-  let downloadArtifactsFromProfiles = commander.program.opts()['profileArtifacts']
-  const descend = !(commander.program.opts()['dontDescend'] === true);
-  if (!createRequirements && !downloadActors && !downloadLogicalModels && !downloadArtifactsFromProfiles) {
-    // If no explicit action is given, do everything
-    createRequirements = true;
-    downloadActors = true;
-    downloadLogicalModels = true;
-    downloadArtifactsFromProfiles = true;
-  }
-
+  const [inputFolder, outputFolder] = commander.program.args;
   const targetFolders = new TargetFolders(outputFolder);
-
-  if (downloadActors) {
-    const actorDefinitionDownloader = new ActorDefinitionDownloader(config.adProject, targetFolders.get("Resources"));
-    await actorDefinitionDownloader.downloadAll();
+  for (const file of getExcelFiles(inputFolder)) {
+    new ExcelConvertor(file, targetFolders, config.canonicalBase).createRequirements();
   }
-
-  let valueSetDownloader = null;
-  if ((downloadLogicalModels || downloadArtifactsFromProfiles) && descend) {
-    valueSetDownloader = new ValueSetDownloader(config.adProject, targetFolders.get("Vocabulary"));
-  }
-
-  if (!fs.existsSync(inputFolder)) {
-    return;
-  }
-
-  for (const excelFile of fs.readdirSync(path.join(inputFolder, "requirements"), {withFileTypes: true}).filter(file => /\.(xlsx|xlsm|xls)$/i.test(file.name)).filter(file => !file.name.startsWith('~$'))) {
-    const convertor = new ExcelConvertor(excelFile, targetFolders, valueSetDownloader, config["canonicalBase"]);
-    if (createRequirements) {
-      convertor.createRequirements();
-    }
-
-    if (downloadLogicalModels) {
-      await convertor.getLogicalModel(config.adProject);
-    }
-  }
-
-  if (downloadArtifactsFromProfiles) {
-    const profileFolder = path.join(inputFolder, "profiles");
-    const profileValueSetCollector = new ProfileValueSetCollector(profileFolder);
-    await valueSetDownloader.downloadAll(profileValueSetCollector.getBindingValueSetCanonicals());
-  }
-
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(error => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+module.exports = { getLogicalModelReferences };
