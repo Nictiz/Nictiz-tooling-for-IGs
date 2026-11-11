@@ -23,7 +23,8 @@ class ArtDecorDownloader {
   #completedRequests = new Set();
   #pendingRequests = new Set();
 
-  constructor(adProject, outputFolder, cacheFolder, serverSourceUrl = "https://decor.nictiz.nl") {
+  constructor(adProject, outputFolder, cacheFolder, serverSourceUrl = "https://decor.nictiz.nl",
+    { logicalModels = true, valueSets = true } = {}) {
     if (!adProject) throw new Error("No ART-DECOR project defined for downloading FHIR artifacts");
     if (!outputFolder) throw new Error("No output folder defined for downloading FHIR artifacts");
     this.adProject = adProject;
@@ -35,7 +36,10 @@ class ArtDecorDownloader {
     this.adEffectiveDates = new Map();
     if (cacheFolder) {
       this.#loadCache();
-      this.ready = this.#loadADHistory();
+      this.ready = this.#loadADState([
+        ...(logicalModels ? ["scenario"] : []),
+        ...(valueSets ? ["valueset"] : [])
+      ]);
     } else {
       this.ready = Promise.resolve();
     }
@@ -62,23 +66,28 @@ class ArtDecorDownloader {
     }
   }
 
-  async #loadADHistory() {
-    const url = `${this.serverSourceUrl}/exist/apps/api/project/${encodeURIComponent(this.adProject)}/history`;
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!response.ok) throw new Error(`Couldn't load ART-DECOR history: HTTP ${response.status} ${response.statusText}`);
-    
-    const body = await response.json();
-    if (!Array.isArray(body.history)) throw new Error("Expected an ART-DECOR history array");
-    
-    for (const entry of body.history) {
-      const { artefactId, artefactEffectiveDate, date } = entry;
-      if (!artefactId || !artefactEffectiveDate || !date) continue;
-      const key = `${artefactId}/${artefactEffectiveDate}`;
-      const previous = this.adEffectiveDates.get(key);
-      if (!previous || date > previous) {
-        this.adEffectiveDates.set(key, date);
+  async #loadADState(operations) {
+    const bodies = await Promise.all(operations.map(async operation => {
+      const url = new URL(`${this.serverSourceUrl}/exist/apps/api/${operation}`);
+      url.searchParams.set("prefix", this.adProject);
+      const response = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(`Couldn't load ART-DECOR ${operation}: HTTP ${response.status} ${response.statusText}`);
+      return response.json();
+    }));
+
+    const indexEntries = value => {
+      if (!value || typeof value !== "object") return;
+      const { id, effectiveDate, lastModifiedDate } = value;
+      if (id && effectiveDate && lastModifiedDate) {
+        const key = `${id}/${effectiveDate}`;
+        const previous = this.adEffectiveDates.get(key);
+        if (!previous || lastModifiedDate > previous) {
+          this.adEffectiveDates.set(key, lastModifiedDate);
+        }
       }
-    }
+      for (const nested of Object.values(value)) indexEntries(nested);
+    };
+    bodies.forEach(indexEntries);
   }
   
   async getActorDefinitions() {
@@ -517,9 +526,11 @@ async function main() {
   const config = parseSushiYaml();
   if (!config.adProject) throw new Error("No ART-DECOR project configured in sushi-config.yaml");
   
-  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder);
+  const doValueSets = doProfiles || (doLogicalModels && !options.dontDescend);
+  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder,
+    undefined, { logicalModels: Boolean(doLogicalModels), valueSets: Boolean(doValueSets) });
   await artDecorDownloader.ready;
-  const valueSetDownloader = doProfiles || (doLogicalModels && !options.dontDescend)
+  const valueSetDownloader = doValueSets
     ? new ValueSetDownloader(artDecorDownloader) : null;
   if (doActors) await artDecorDownloader.getActorDefinitions();
   if (doLogicalModels) {
