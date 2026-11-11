@@ -6,7 +6,7 @@
     "excel-to-artifacts": "src/excel-to-artifacts.js",
     "translate-menu": "src/translate-menu.js",
     "sync-profiles": "src/sync-profiles.js",
-    "art-decor-download": "src/art-decor-downloader.js"
+    "get-from-ad": "src/get-from-ad.js"
   },
   "engines": {
     "node": ">=18"
