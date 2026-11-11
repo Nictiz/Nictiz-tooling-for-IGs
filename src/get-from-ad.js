@@ -509,20 +509,18 @@ class LogicalModelDownloader {
 
 async function main() {
   commander.program
-    .option("--actors", "Download ActorDefinitions from ART-DECOR")
-    .option("--lm", "Download logical models referenced by Excel workbooks")
-    .option("--profile-artifacts", "Download ValueSets referenced by profiles")
-    .option("--cache-folder <folder>", "Folder containing cache.json and cached FHIR resources; caching is disabled when omitted")
+    .option("--actors", "Download ActorDefinitions")
+    .option("--lm <folder>", "Download logical models referenced by Excel files in this folder, including their associated ValueSets")
+    .option("--profile-artifacts <folder>", "Download ValueSets referenced by XML profiles in this folder")
     .addOption(new commander.Option("--dont-descend", "Do not download ValueSets referenced by logical models").conflicts("profile-artifacts"))
-    .argument("<inputFolder>")
-    .argument("<outputFolder>")
+    .option("--cache-folder <folder>", "Folder to cached downloaded artifacts. If used, subsequent runs will only download artifacts if they are changed on the server.")
+    .argument("<outputFolder>", "The root of the folder to place the downloaded artifacts in. Different sub folders will be used for different kinds of artifacts.")
     .parse();
   const options = commander.program.opts();
-  const [inputFolder, outputFolder] = commander.program.args;
-  const doAll = !options.actors && !options.lm && !options.profileArtifacts;
-  const doActors = doAll || options.actors;
-  const doLogicalModels = doAll || options.lm;
-  const doProfiles = (doAll && !options.dontDescend) || options.profileArtifacts;
+  const [outputFolder] = commander.program.args;
+  const doActors = options.actors || (!options.lm && !options.profileArtifacts);
+  const doLogicalModels = Boolean(options.lm);
+  const doProfiles = Boolean(options.profileArtifacts);
   const doValueSets = doProfiles || (doLogicalModels && !options.dontDescend);
   
   const config = parseSushiYaml();
@@ -533,12 +531,12 @@ async function main() {
   if (doActors) await artDecorDownloader.getActorDefinitions();
   if (doLogicalModels) {
     const downloader = new LogicalModelDownloader(artDecorDownloader, options.dontDescend ? null : valueSetDownloader);
-    for (const { adId } of getLogicalModelReferences(inputFolder)) {
+    for (const { adId } of getLogicalModelReferences(options.lm)) {
       await downloader.download(adId);
     }
   }
   if (doProfiles) {
-    const collector = new ProfileValueSetCollector(path.join(inputFolder, "profiles"));
+    const collector = new ProfileValueSetCollector(options.profileArtifacts);
     await valueSetDownloader.downloadAll(collector.getBindingValueSetCanonicals());
   }
 }

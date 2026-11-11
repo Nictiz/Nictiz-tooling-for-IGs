@@ -537,8 +537,7 @@ class ExcelConvertor {
 
 }
 
-function getExcelFiles(inputFolder) {
-  const folder = path.join(inputFolder, "requirements");
+function getExcelFiles(folder) {
   if (!fs.existsSync(folder)) return [];
   return fs.readdirSync(folder, { withFileTypes: true })
     .filter(file => file.isFile() && /\.(xlsx|xlsm|xls)$/i.test(file.name) && !file.name.startsWith("~$"))
