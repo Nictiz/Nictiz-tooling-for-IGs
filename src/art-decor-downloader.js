@@ -22,9 +22,9 @@ class ArtDecorDownloader {
 
   #completedRequests = new Set();
   #pendingRequests = new Set();
+  #stateLoads = new Map();
 
-  constructor(adProject, outputFolder, cacheFolder, serverSourceUrl = "https://decor.nictiz.nl",
-    { logicalModels = true, valueSets = true } = {}) {
+  constructor(adProject, outputFolder, cacheFolder, serverSourceUrl = "https://decor.nictiz.nl") {
     if (!adProject) throw new Error("No ART-DECOR project defined for downloading FHIR artifacts");
     if (!outputFolder) throw new Error("No output folder defined for downloading FHIR artifacts");
     this.adProject = adProject;
@@ -36,13 +36,40 @@ class ArtDecorDownloader {
     this.adEffectiveDates = new Map();
     if (cacheFolder) {
       this.#loadCache();
-      this.ready = this.#loadADState([
-        ...(logicalModels ? ["scenario"] : []),
-        ...(valueSets ? ["valueset"] : [])
-      ]);
-    } else {
-      this.ready = Promise.resolve();
     }
+  }
+  
+  async getActorDefinitions() {
+    await this.#search("ActorDefinition", { publisher: this.adProject });
+  }
+
+  async getValueSet(canonical) {
+    const url = new URL(ArtDecorDownloader.normalizeCanonical(canonical));
+    
+    await this.#ensureADState("valueset");
+    const resources = this.#useCachedResource(this.cacheByCanonical.get(url.toString()), "ValueSet");
+    if (resources !== null) return resources;
+    
+    return this.#search("ValueSet", { url: url.toString() });
+  }
+
+  async getLogicalModel(adId) {
+    const parts = adId.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      console.warn(`Skipping logical model: invalid ART-DECOR ID "${adId}"`);
+      return [];
+    }
+    await this.#ensureADState("scenario");
+    const cached = this.cacheByIdentifier.get(adId);
+    const resources = this.#useCachedResource(cached, "StructureDefinition");
+    if (resources !== null) return resources;
+    
+    const date = parts[1].replace(/[-:T]/g, "");
+    const id = `${parts[0]}--${date}`;
+    const url = new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/StructureDefinition/${encodeURIComponent(id)}`);
+    url.searchParams.set("language", "en-US");
+    url.searchParams.set("_format", "json");
+    return this.#request("StructureDefinition", url, false);
   }
 
   #loadCache() {
@@ -66,63 +93,38 @@ class ArtDecorDownloader {
     }
   }
 
-  async #loadADState(operations) {
-    const bodies = await Promise.all(operations.map(async operation => {
-      const url = new URL(`${this.serverSourceUrl}/exist/apps/api/${operation}`);
-      url.searchParams.set("prefix", this.adProject);
-      const response = await fetch(url.toString(), { headers: { Accept: "application/json" } });
-      if (!response.ok) throw new Error(`Couldn't load ART-DECOR ${operation}: HTTP ${response.status} ${response.statusText}`);
-      return response.json();
-    }));
+  async #ensureADState(operation) {
+    if (!this.cacheFolder) return;
+    if (!this.#stateLoads.has(operation)) {
+      const loading = (async () => {
+        const url = new URL(`${this.serverSourceUrl}/exist/apps/api/${operation}`);
+        url.searchParams.set("prefix", this.adProject);
+        const response = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+        if (!response.ok) throw new Error(`Couldn't load ART-DECOR ${operation}: HTTP ${response.status} ${response.statusText}`);
+        const body = await response.json();
 
-    const indexEntries = value => {
-      if (!value || typeof value !== "object") return;
-      const { id, effectiveDate, lastModifiedDate } = value;
-      if (id && effectiveDate && lastModifiedDate) {
-        const key = `${id}/${effectiveDate}`;
-        const previous = this.adEffectiveDates.get(key);
-        if (!previous || lastModifiedDate > previous) {
-          this.adEffectiveDates.set(key, lastModifiedDate);
-        }
-      }
-      for (const nested of Object.values(value)) indexEntries(nested);
-    };
-    bodies.forEach(indexEntries);
+        const indexEntries = value => {
+          if (!value || typeof value !== "object") return;
+          const { id, effectiveDate, lastModifiedDate } = value;
+          if (id && effectiveDate && lastModifiedDate) {
+            const key = `${id}/${effectiveDate}`;
+            const previous = this.adEffectiveDates.get(key);
+            if (!previous || lastModifiedDate > previous) {
+              this.adEffectiveDates.set(key, lastModifiedDate);
+            }
+          }
+          for (const nested of Object.values(value)) indexEntries(nested);
+        };
+        indexEntries(body);
+      })().catch(error => {
+        this.#stateLoads.delete(operation);
+        throw error;
+      });
+      this.#stateLoads.set(operation, loading);
+    }
+    await this.#stateLoads.get(operation);
   }
   
-  async getActorDefinitions() {
-    await this.#search("ActorDefinition", { publisher: this.adProject });
-  }
-
-  async getValueSet(canonical) {
-    const url = new URL(ArtDecorDownloader.normalizeCanonical(canonical));
-    
-    await this.ready;
-    const resources = this.#useCachedResource(this.cacheByCanonical.get(url.toString()), "ValueSet");
-    if (resources !== null) return resources;
-    
-    return this.#search("ValueSet", { url: url.toString() });
-  }
-
-  async getLogicalModel(adId) {
-    const parts = adId.split("/");
-    if (parts.length !== 2 || !parts[0] || !parts[1]) {
-      console.warn(`Skipping logical model: invalid ART-DECOR ID "${adId}"`);
-      return [];
-    }
-    await this.ready;
-    const cached = this.cacheByIdentifier.get(adId);
-    const resources = this.#useCachedResource(cached, "StructureDefinition");
-    if (resources !== null) return resources;
-    
-    const date = parts[1].replace(/[-:T]/g, "");
-    const id = `${parts[0]}--${date}`;
-    const url = new URL(`${this.serverSourceUrl}/fhir/4.0/${this.adProject}/StructureDefinition/${encodeURIComponent(id)}`);
-    url.searchParams.set("language", "en-US");
-    url.searchParams.set("_format", "json");
-    return this.#request("StructureDefinition", url, false);
-  }
-
   #useCachedResource(cached, resourceType) {
     const historyDate = cached && this.adEffectiveDates.get(cached.identifier);
     if (cached && historyDate && cached.date === historyDate) {
@@ -180,7 +182,6 @@ class ArtDecorDownloader {
     this.#pendingRequests.add(requestKey);
 
     try {
-      await this.ready;
       const response = await fetch(requestKey, {
         headers: { "Accept": "application/fhir+json, application/json; fhirVersion=4.0" }
       });
@@ -522,16 +523,13 @@ async function main() {
   const doActors = doAll || options.actors;
   const doLogicalModels = doAll || options.lm;
   const doProfiles = (doAll && !options.dontDescend) || options.profileArtifacts;
+  const doValueSets = doProfiles || (doLogicalModels && !options.dontDescend);
   
   const config = parseSushiYaml();
   if (!config.adProject) throw new Error("No ART-DECOR project configured in sushi-config.yaml");
   
-  const doValueSets = doProfiles || (doLogicalModels && !options.dontDescend);
-  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder,
-    undefined, { logicalModels: Boolean(doLogicalModels), valueSets: Boolean(doValueSets) });
-  await artDecorDownloader.ready;
-  const valueSetDownloader = doValueSets
-    ? new ValueSetDownloader(artDecorDownloader) : null;
+  const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder);
+  const valueSetDownloader = doValueSets ? new ValueSetDownloader(artDecorDownloader) : null;
   if (doActors) await artDecorDownloader.getActorDefinitions();
   if (doLogicalModels) {
     const downloader = new LogicalModelDownloader(artDecorDownloader, options.dontDescend ? null : valueSetDownloader);
