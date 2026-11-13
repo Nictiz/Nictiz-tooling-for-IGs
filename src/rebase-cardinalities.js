@@ -124,7 +124,20 @@ class ProfileCardinalityRebaser {
         }
         if (element[key] !== baseline[key]) change[key] = element[key];
       }
-      if ('min' in change || 'max' in change) {
+      const binding = {};
+      for (const key of ['valueSet', 'strength']) {
+        const value = element.binding?.[key];
+        const baselineValue = baseline.binding?.[key];
+        let matches = value === baselineValue;
+        if (key === 'valueSet') {
+          const [url, version] = value?.split('|') || [];
+          const [baselineUrl, baselineVersion] = baselineValue?.split('|') || [];
+          matches = url === baselineUrl && (!version || !baselineVersion || version === baselineVersion);
+        }
+        if (value !== undefined && !matches) binding[key] = value;
+      }
+      if (Object.keys(binding).length) change.binding = binding;
+      if ('min' in change || 'max' in change || 'binding' in change) {
         if (element.sliceName !== undefined) change.sliceName = element.sliceName;
         output.differential.element.push(change);
       }
@@ -186,7 +199,7 @@ function run(inputs, options) {
 if (require.main === module) {
   commander.program
     .name('rebase-cardinalities')
-    .description('Create JSON differentials containing cardinality changes against referenced package profiles.')
+    .description('Create JSON differentials containing cardinality and binding changes against referenced package profiles.')
     .argument('<profiles...>', 'JSON files or directories containing JSON profiles (nonrecursive)')
     .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles', value => {
       if (!/^[^#\\/]+#[^#\\/]+$/.test(value) || value.includes('..')) {
