@@ -164,6 +164,24 @@ class ProfileCardinalityRebaser {
     }));
   }
 
+  #typeProperties(types) {
+    return types?.map(type => {
+      const result = { code: type.code };
+      for (const key of ['profile', 'targetProfile']) {
+        if (type[key]?.length) result[key] = [...type[key]];
+      }
+      return result;
+    });
+  }
+
+  #typesMatch(types, baselineTypes) {
+    const normalize = list => (this.#typeProperties(list) || []).map(type => {
+      for (const key of ['profile', 'targetProfile']) type[key]?.sort();
+      return JSON.stringify(type);
+    }).sort();
+    return isDeepStrictEqual(normalize(types), normalize(baselineTypes));
+  }
+
   #createDifferential(referenced) {
     const input = this.input;
     const sourceElements = this.#snapshotIndex(input);
@@ -193,6 +211,7 @@ class ProfileCardinalityRebaser {
         continue;
       }
       if (isNew) this.#addSlicing(element, sourceElements, referenceElements, changes);
+
       const change = changes.get(id) || { id, path: element.path };
       for (const key of ['min', 'max']) {
         if (element[key] === undefined || baseline[key] === undefined) {
@@ -200,6 +219,7 @@ class ProfileCardinalityRebaser {
         }
         if (element[key] !== baseline[key]) change[key] = element[key];
       }
+
       const binding = {};
       for (const key of ['valueSet', 'strength']) {
         const value = element.binding?.[key];
@@ -210,12 +230,14 @@ class ProfileCardinalityRebaser {
         }
         if (value !== undefined && !matches) binding[key] = value;
       }
+
       const additionalBindings = this.#additionalBindings(element.binding, baseline.binding);
       if (additionalBindings.length) binding.extension = additionalBindings;
       if (Object.keys(binding).length) change.binding = binding;
       if (element.comment !== undefined && element.comment !== baseline.comment) {
         change.comment = element.comment;
       }
+
       const sliceConstraints = Object.keys(element).filter(key =>
         id.includes(':') && /^(fixed|pattern)[A-Z]/.test(key));
       for (const key of sliceConstraints) {
@@ -223,8 +245,11 @@ class ProfileCardinalityRebaser {
           change[key] = structuredClone(element[key]);
         }
       }
+      if (id.includes(':') && element.type !== undefined && !this.#typesMatch(element.type, baseline.type)) {
+        change.type = this.#typeProperties(element.type);
+      }
       if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change ||
-          'slicing' in change || sliceConstraints.some(key => key in change) ||
+          'slicing' in change || 'type' in change || sliceConstraints.some(key => key in change) ||
           (isNew && element.sliceName !== undefined)) {
         if (element.sliceName !== undefined) change.sliceName = element.sliceName;
         changes.set(id, change);
