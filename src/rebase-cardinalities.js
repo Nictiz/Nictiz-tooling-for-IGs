@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { homedir } = require('node:os');
+const { isDeepStrictEqual } = require('node:util');
 const commander= require('commander');
 
 const PROFILE_EXTENSIONS = new Set([
@@ -91,6 +92,55 @@ class ProfileCardinalityRebaser {
     return index;
   }
 
+  #sliceBaseId(id) {
+    const colon = id.lastIndexOf(':');
+    if (colon === -1) return undefined;
+    const end = id.indexOf('.', colon);
+    const sliceEnd = end === -1 ? id.length : end;
+    const slash = id.lastIndexOf('/', sliceEnd - 1);
+    const cut = slash > colon ? slash : colon;
+    return id.slice(0, cut) + id.slice(sliceEnd);
+  }
+
+  #sliceBaseline(id, sourceElements, referenceElements) {
+    let baseId = this.#sliceBaseId(id);
+    while (baseId) {
+      if (referenceElements.has(baseId)) {
+        return sourceElements.get(baseId) || referenceElements.get(baseId);
+      }
+      baseId = this.#sliceBaseId(baseId);
+    }
+    return undefined;
+  }
+
+  #addSlicing(element, sourceElements, referenceElements, changes) {
+    const parts = element.id.split('.');
+    for (let i = 0; i < parts.length; i++) {
+      if (!parts[i].includes(':')) continue;
+      let sliceId = parts.slice(0, i + 1).join('.');
+      while (sliceId) {
+        const baseId = this.#sliceBaseId(sliceId);
+        if (!baseId) break;
+        const base = sourceElements.get(baseId);
+        const reference = referenceElements.get(baseId) ||
+          this.#sliceBaseline(baseId, referenceElements, referenceElements);
+        const discriminators = base?.slicing?.discriminator;
+        const matches = discriminators?.length === reference?.slicing?.discriminator?.length &&
+          discriminators?.every((item, index) => {
+            const other = reference.slicing.discriminator[index];
+            return item.type === other.type && item.path === other.path;
+          });
+        if (discriminators && !matches) {
+          const change = changes.get(baseId) || { id: baseId, path: base.path };
+          if (base.sliceName !== undefined) change.sliceName = base.sliceName;
+          change.slicing = structuredClone(base.slicing);
+          changes.set(baseId, change);
+        }
+        sliceId = baseId;
+      }
+    }
+  }
+
   #createDifferential(referenced) {
     const input = this.input;
     const sourceElements = this.#snapshotIndex(input);
@@ -111,13 +161,16 @@ class ProfileCardinalityRebaser {
 
     // Walk the snapshot elements of the input file to compare them with the compliesWith profile.    
     const unmatched = [];
+    const changes = new Map();
     for (const [id, element] of sourceElements) {
-      const baseline = referenceElements.get(id);
+      const isNew = !referenceElements.has(id);
+      const baseline = referenceElements.get(id) || this.#sliceBaseline(id, sourceElements, referenceElements);
       if (!baseline) {
         unmatched.push(id);
         continue;
       }
-      const change = { id, path: element.path };
+      if (isNew) this.#addSlicing(element, sourceElements, referenceElements, changes);
+      const change = changes.get(id) || { id, path: element.path };
       for (const key of ['min', 'max']) {
         if (element[key] === undefined || baseline[key] === undefined) {
           throw new Error(`${id}: ${key} is missing from an input or referenced snapshot`);
@@ -140,11 +193,21 @@ class ProfileCardinalityRebaser {
       if (element.comment !== undefined && element.comment !== baseline.comment) {
         change.comment = element.comment;
       }
-      if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change) {
+      const sliceConstraints = Object.keys(element).filter(key =>
+        id.includes(':') && /^(fixed|pattern)[A-Z]/.test(key));
+      for (const key of sliceConstraints) {
+        if (!isDeepStrictEqual(element[key], baseline[key])) {
+          change[key] = structuredClone(element[key]);
+        }
+      }
+      if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change ||
+          'slicing' in change || sliceConstraints.some(key => key in change) ||
+          (isNew && element.sliceName !== undefined)) {
         if (element.sliceName !== undefined) change.sliceName = element.sliceName;
-        output.differential.element.push(change);
+        changes.set(id, change);
       }
     }
+    output.differential.element = [...sourceElements.keys()].filter(id => changes.has(id)).map(id => changes.get(id));
     return { output, unmatched, referencedProfileName: referenced.name || referenced.id || referenced.url };
   }
 }
