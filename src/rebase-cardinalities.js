@@ -129,7 +129,7 @@ class ProfileCardinalityRebaser {
         output.differential.element.push(change);
       }
     }
-    return { output, unmatched };
+    return { output, unmatched, referencedProfileName: referenced.name || referenced.id || referenced.url };
   }
 }
 
@@ -150,9 +150,6 @@ function inputFiles(inputs) {
 }
 
 function run(inputs, options) {
-  if (!/^[^#\\/]+#[^#\\/]+$/.test(options.ig) || options.ig.includes('..')) {
-    throw new Error('--ig must be <package-id>#<version>, e.g. hl7.fhir.eu.eps#1.0.0-ballot');
-  }
   const destination = path.resolve(options.output);
   const fhirPackage = new FhirPackage(options.ig, options.cache);
   let written = 0;
@@ -162,10 +159,10 @@ function run(inputs, options) {
       const input = readJson(filename);
       const result = new ProfileCardinalityRebaser(input, fhirPackage).rebase();
       if (result.skipped) {
-        console.log(`Skipped ${filename}: ${result.skipped}`);
+        console.log(`- Skipped ${path.basename(filename)}: ${result.skipped}`);
         continue;
       }
-      const { output, unmatched } = result;
+      const { output, unmatched, referencedProfileName } = result;
       const target = path.join(destination, path.basename(filename));
       if (target === filename) throw new Error('Output would overwrite the input profile');
       if (destinations.has(target)) throw new Error(`Duplicate output filename: ${target}`);
@@ -173,10 +170,13 @@ function run(inputs, options) {
       fs.mkdirSync(destination, { recursive: true });
       fs.writeFileSync(target, JSON.stringify(output, null, 2) + '\n');
       written++;
-      console.log(`Wrote ${target} (${output.differential.element.length} changed elements)`);
-      if (unmatched.length) console.warn(`${filename}: skipped ${unmatched.length} elements absent from referenced snapshot: ${unmatched.join(', ')}`);
+
+      const skipped = unmatched.length
+        ? `; skipped ${unmatched.length} elements not present in ${referencedProfileName}:\n${unmatched.map(id => `  - ${id}`).join('\n')}`
+        : '';
+      console.log(`- Rebased ${path.basename(target)} (${output.differential.element.length} changed elements)${skipped}`);
     } catch (error) {
-      console.error(`${filename}: ${error.message}`);
+      console.error(`- Skipped ${path.basename(filename)}: ${error.message}`);
       process.exitCode = 1;
     }
   }
@@ -188,9 +188,14 @@ if (require.main === module) {
     .name('rebase-cardinalities')
     .description('Create JSON differentials containing cardinality changes against referenced package profiles.')
     .argument('<profiles...>', 'JSON files or directories containing JSON profiles (nonrecursive)')
-    .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles')
+    .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles', value => {
+      if (!/^[^#\\/]+#[^#\\/]+$/.test(value) || value.includes('..')) {
+        throw new commander.InvalidArgumentError('Expected <package-id>#<version>, e.g. hl7.fhir.eu.eps#1.0.0-ballot');
+      }
+      return value;
+    })
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
-    .option('--output <directory>', 'Output directory', 'profiles/rebased')
+    .requiredOption('--output <directory>', 'Output directory')
     .action(run);
   commander.program.parse();
 }
