@@ -5,7 +5,8 @@
   "bin": {
     "excel-to-artifacts": "src/excel-to-artifacts.js",
     "translate-menu": "src/translate-menu.js",
-    "sync-profiles": "src/sync-profiles.js"
+    "sync-profiles": "src/sync-profiles.js",
+    "rebase-cardinalities": "src/rebase-cardinalities.js"
   },
   "engines": {
     "node": ">=18"

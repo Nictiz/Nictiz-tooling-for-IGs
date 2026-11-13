@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { homedir } = require('node:os');
+const commander= require('commander');
+
+const PROFILE_EXTENSIONS = new Set([
+  'http://hl7.org/fhir/StructureDefinition/structuredefinition-imposeProfile',
+  'http://hl7.org/fhir/StructureDefinition/structuredefinition-compliesWithProfile',
+]);
+
+function readJson(filename) {
+  return JSON.parse((fs.readFileSync(filename, 'utf8')).replace(/^\uFEFF/, ''));
+}
+
+class FhirPackage {
+  constructor(ig, cache = path.join(homedir(), '.fhir', 'packages')) {
+    this.ig = ig;
+    this.cache = cache;
+    this.profiles = undefined;
+  }
+
+  #load() {
+    const { cache, ig } = this;
+    const packageDirectory = path.join(cache, ig, 'package');
+    const profiles = new Map();
+    // Scan the actual resources, so a missing or stale .index.json is harmless.
+    for (const entry of fs.readdirSync(packageDirectory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('.')) continue;
+      const resource = readJson(path.join(packageDirectory, entry.name));
+      if (resource.resourceType !== 'StructureDefinition' || !resource.url) continue;
+      const matches = profiles.get(resource.url) || [];
+      matches.push(resource);
+      profiles.set(resource.url, matches);
+    }
+    return profiles;
+  }
+
+  resolve(canonical) {
+    this.profiles ??= this.#load();
+    const profiles = this.profiles;
+    const [url, version, ...extra] = canonical.split('|');
+    if (!url || extra.length || (version !== undefined && !version)) {
+      throw new Error(`Invalid profile canonical: ${canonical}`);
+    }
+    const matches = (profiles.get(url) || []).filter(profile =>
+      version === undefined || profile.version === version);
+    if (matches.length !== 1) {
+      throw new Error(`Expected one profile for ${canonical} in the selected package; found ${matches.length}`);
+    }
+    return matches[0];
+  }
+}
+
+class ProfileCardinalityRebaser {
+  constructor(input, fhirPackage) {
+    this.input = input;
+    this.package = fhirPackage;
+  }
+
+  rebase() {
+    if (this.input.resourceType !== 'StructureDefinition') {
+      return { skipped: 'not a StructureDefinition' };
+    }
+    const extensions = (this.input.extension || []).filter(extension => PROFILE_EXTENSIONS.has(extension.url));
+    if (!extensions.length) {
+      return { skipped: 'no imposeProfile or compliesWithProfile extension' };
+    }
+    if (extensions.some(extension => typeof extension.valueCanonical !== 'string' || !extension.valueCanonical)) {
+      throw new Error('Profile extension requires a nonempty valueCanonical');
+    }
+    const canonicals = [...new Set(extensions.map(extension => extension.valueCanonical))];
+    if (canonicals.length !== 1) throw new Error(`Multiple distinct referenced profiles: ${canonicals.join(', ')}`);
+    const referenced = this.package.resolve(canonicals[0]);
+    return this.#createDifferential(referenced);
+  }
+
+  #snapshotIndex(profile) {
+    if (!Array.isArray(profile.snapshot?.element) || !profile.snapshot.element.length) {
+      throw new Error(`${profile.url || profile.id}: missing snapshot.element`);
+    }
+    const index = new Map();
+    for (const element of profile.snapshot.element) {
+      if (!element.id || !element.path) {
+        throw new Error(`${profile.url || profile.id}: snapshot element requires id and path`);
+      }
+      if (index.has(element.id)) throw new Error(`Duplicate element id: ${element.id}`);
+      index.set(element.id, element);
+    }
+    return index;
+  }
+
+  #createDifferential(referenced) {
+    const input = this.input;
+    const sourceElements = this.#snapshotIndex(input);
+    const referenceElements = this.#snapshotIndex(referenced);
+
+    // Create new profile based on source metadata, skipping the compliesWith or imposeProfile
+    // extensions, and with an empty differential to start with.
+    const output = {};
+    for (const [key, value] of Object.entries(input)) {
+      if (key === 'snapshot') break;
+      if (key !== 'differential') output[key] = value;
+    }
+    if (output.extension) {
+      output.extension = output.extension.filter(extension => !PROFILE_EXTENSIONS.has(extension.url));
+      if (!output.extension.length) delete output.extension;
+    }
+    output.differential = { element: [] };
+
+    // Walk the snapshot elements of the input file to compare them with the compliesWith profile.    
+    const unmatched = [];
+    for (const [id, element] of sourceElements) {
+      const baseline = referenceElements.get(id);
+      if (!baseline) {
+        unmatched.push(id);
+        continue;
+      }
+      const change = { id, path: element.path };
+      for (const key of ['min', 'max']) {
+        if (element[key] === undefined || baseline[key] === undefined) {
+          throw new Error(`${id}: ${key} is missing from an input or referenced snapshot`);
+        }
+        if (element[key] !== baseline[key]) change[key] = element[key];
+      }
+      if ('min' in change || 'max' in change) {
+        if (element.sliceName !== undefined) change.sliceName = element.sliceName;
+        output.differential.element.push(change);
+      }
+    }
+    return { output, unmatched };
+  }
+}
+
+function inputFiles(inputs) {
+  const files = new Set();
+  for (const input of inputs) {
+    const absolute = path.resolve(input);
+    const stat = fs.statSync(absolute);
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.json')) files.add(path.join(absolute, entry.name));
+      }
+    } else {
+      files.add(absolute);
+    }
+  }
+  return [...files].sort();
+}
+
+function run(inputs, options) {
+  if (!/^[^#\\/]+#[^#\\/]+$/.test(options.ig) || options.ig.includes('..')) {
+    throw new Error('--ig must be <package-id>#<version>, e.g. hl7.fhir.eu.eps#1.0.0-ballot');
+  }
+  const destination = path.resolve(options.output);
+  const fhirPackage = new FhirPackage(options.ig, options.cache);
+  let written = 0;
+  const destinations = new Set();
+  for (const filename of inputFiles(inputs)) {
+    try {
+      const input = readJson(filename);
+      const result = new ProfileCardinalityRebaser(input, fhirPackage).rebase();
+      if (result.skipped) {
+        console.log(`Skipped ${filename}: ${result.skipped}`);
+        continue;
+      }
+      const { output, unmatched } = result;
+      const target = path.join(destination, path.basename(filename));
+      if (target === filename) throw new Error('Output would overwrite the input profile');
+      if (destinations.has(target)) throw new Error(`Duplicate output filename: ${target}`);
+      destinations.add(target);
+      fs.mkdirSync(destination, { recursive: true });
+      fs.writeFileSync(target, JSON.stringify(output, null, 2) + '\n');
+      written++;
+      console.log(`Wrote ${target} (${output.differential.element.length} changed elements)`);
+      if (unmatched.length) console.warn(`${filename}: skipped ${unmatched.length} elements absent from referenced snapshot: ${unmatched.join(', ')}`);
+    } catch (error) {
+      console.error(`${filename}: ${error.message}`);
+      process.exitCode = 1;
+    }
+  }
+  console.log(`Wrote ${written} profile(s).`);
+}
+
+if (require.main === module) {
+  commander.program
+    .name('rebase-cardinalities')
+    .description('Create JSON differentials containing cardinality changes against referenced package profiles.')
+    .argument('<profiles...>', 'JSON files or directories containing JSON profiles (nonrecursive)')
+    .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles')
+    .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
+    .option('--output <directory>', 'Output directory', 'profiles/rebased')
+    .action(run);
+  commander.program.parse();
+}
+
+module.exports = { ProfileCardinalityRebaser, FhirPackage };
