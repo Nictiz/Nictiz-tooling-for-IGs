@@ -406,12 +406,13 @@ class ProfileCardinalityRebaser {
         change.type = this.#typeProperties(element.type);
       }
       if (id === extensionRoot) {
-        // Extension slice roots always identify their extension, even when inherited unchanged.
+        // Keep standalone extension references explicit; local child URLs are not profile canonicals.
         const url = sourceElements.get(`${id}.url`);
         const profiles = element.type?.find(type => type.code === 'Extension')?.profile;
         const canonical = url?.fixedUri || url?.fixedUrl || url?.patternUri || url?.patternUrl;
-        if (!profiles?.length && !canonical) throw new Error(`Missing extension canonical for ${id}`);
-        change.type = [{ code: 'Extension', profile: profiles?.length ? [...profiles] : [canonical] }];
+        if (profiles?.length || (canonical && /^[A-Za-z][A-Za-z0-9+.-]*:/.test(canonical))) {
+          change.type = [{ code: 'Extension', profile: profiles?.length ? [...profiles] : [canonical] }];
+        }
       }
       if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change ||
           'slicing' in change || 'type' in change || sliceConstraints.some(key => key in change) ||
