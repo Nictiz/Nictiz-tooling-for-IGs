@@ -386,7 +386,11 @@ class ProfileCardinalityRebaser {
 
       const additionalBindings = this.#additionalBindings(element.binding, baseline.binding);
       if (additionalBindings.length) binding.extension = additionalBindings;
-      if (Object.keys(binding).length) change.binding = binding;
+      if (Object.keys(binding).length) {
+        binding.strength = element.binding?.strength ?? baseline.binding?.strength;
+        if (binding.strength === undefined) throw new Error(`${id}: binding.strength is required`);
+        change.binding = binding;
+      }
       if (element.comment !== undefined && element.comment !== baseline.comment) {
         change.comment = element.comment;
       }
