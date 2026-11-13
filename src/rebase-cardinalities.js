@@ -137,7 +137,10 @@ class ProfileCardinalityRebaser {
         if (value !== undefined && !matches) binding[key] = value;
       }
       if (Object.keys(binding).length) change.binding = binding;
-      if ('min' in change || 'max' in change || 'binding' in change) {
+      if (element.comment !== undefined && element.comment !== baseline.comment) {
+        change.comment = element.comment;
+      }
+      if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change) {
         if (element.sliceName !== undefined) change.sliceName = element.sliceName;
         output.differential.element.push(change);
       }
