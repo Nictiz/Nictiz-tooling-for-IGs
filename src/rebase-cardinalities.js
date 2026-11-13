@@ -10,6 +10,10 @@ const PROFILE_EXTENSIONS = new Set([
   'http://hl7.org/fhir/StructureDefinition/structuredefinition-imposeProfile',
   'http://hl7.org/fhir/StructureDefinition/structuredefinition-compliesWithProfile',
 ]);
+const ADDITIONAL_BINDING_URL = 'http://hl7.org/fhir/tools/StructureDefinition/additional-binding';
+const ADDITIONAL_BINDING_FIELDS = new Set([
+  'key', 'purpose', 'valueSet', 'documentation', 'shortDoco', 'usage', 'any',
+]);
 
 function readJson(filename) {
   return JSON.parse((fs.readFileSync(filename, 'utf8')).replace(/^\uFEFF/, ''));
@@ -141,6 +145,25 @@ class ProfileCardinalityRebaser {
     }
   }
 
+  #valueSetsMatch(value, baselineValue) {
+    const [url, version] = value?.split('|') || [];
+    const [baselineUrl, baselineVersion] = baselineValue?.split('|') || [];
+    return url === baselineUrl && (!version || !baselineVersion || version === baselineVersion);
+  }
+
+  #additionalBindings(binding, baseline) {
+    const extensions = (binding?.extension || []).filter(item => item.url === ADDITIONAL_BINDING_URL);
+    const reference = (baseline?.extension || []).filter(item => item.url === ADDITIONAL_BINDING_URL);
+    const field = (extension, name) => extension.extension?.find(item => item.url === name);
+    return extensions.filter(extension => !reference.some(other =>
+      field(extension, 'purpose')?.valueCode === field(other, 'purpose')?.valueCode &&
+      this.#valueSetsMatch(field(extension, 'valueSet')?.valueCanonical, field(other, 'valueSet')?.valueCanonical)
+    )).map(extension => ({
+      url: ADDITIONAL_BINDING_URL,
+      extension: structuredClone((extension.extension || []).filter(item => ADDITIONAL_BINDING_FIELDS.has(item.url))),
+    }));
+  }
+
   #createDifferential(referenced) {
     const input = this.input;
     const sourceElements = this.#snapshotIndex(input);
@@ -183,12 +206,12 @@ class ProfileCardinalityRebaser {
         const baselineValue = baseline.binding?.[key];
         let matches = value === baselineValue;
         if (key === 'valueSet') {
-          const [url, version] = value?.split('|') || [];
-          const [baselineUrl, baselineVersion] = baselineValue?.split('|') || [];
-          matches = url === baselineUrl && (!version || !baselineVersion || version === baselineVersion);
+          matches = this.#valueSetsMatch(value, baselineValue);
         }
         if (value !== undefined && !matches) binding[key] = value;
       }
+      const additionalBindings = this.#additionalBindings(element.binding, baseline.binding);
+      if (additionalBindings.length) binding.extension = additionalBindings;
       if (Object.keys(binding).length) change.binding = binding;
       if (element.comment !== undefined && element.comment !== baseline.comment) {
         change.comment = element.comment;
