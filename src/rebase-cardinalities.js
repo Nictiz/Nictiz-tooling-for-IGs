@@ -112,7 +112,9 @@ class ProfileCardinalityRebaser {
     const canonicals = [...new Set(extensions.map(extension => extension.valueCanonical))];
     if (canonicals.length !== 1) throw new Error(`Multiple distinct referenced profiles: ${canonicals.join(', ')}`);
     const referenced = this.package.resolve(canonicals[0]);
-    return this.#createDifferential(referenced);
+    const result = this.#createDifferential(referenced);
+    result.output.baseDefinition = canonicals[0];
+    return result;
   }
 
   #snapshotIndex(profile) {
