@@ -93,6 +93,8 @@ class FhirPackage {
 }
 
 class ProfileCardinalityRebaser {
+  #definitions = new Map();
+
   constructor(input, fhirPackage) {
     this.input = input;
     this.package = fhirPackage;
@@ -237,7 +239,8 @@ class ProfileCardinalityRebaser {
   }
 
   /**
-   * Match snapshot extension and modifierExtension slices to reference slices.
+   * Match snapshot extension and modifierExtension slices to elements in the
+   * referenced profile.
    * This examines element definitions, not their metadata extension arrays.
    *
    * Matches require the same parent, sliceName, and a shared canonical URL,
@@ -256,7 +259,7 @@ class ProfileCardinalityRebaser {
    * @returns {Map<string, object|undefined>} Source slice IDs and their reference matches.
    * @throws {Error} If more than one reference slice matches a source slice.
    */
-  #extensionContexts(sourceElements, referenceElements) {
+  #matchingElementsForExtensionElements(sourceElements, referenceElements) {
     const isExtension = element => element.sliceName !== undefined && /\.(modifierExtension|extension)$/.test(element.path);
     const canonical = (element, elements) => {
       const profiles = element.type?.filter(type => type.code === 'Extension').flatMap(type => type.profile || []) || [];
@@ -283,6 +286,131 @@ class ProfileCardinalityRebaser {
     return contexts;
   }
 
+  /** Lazily resolve a context's definition, sharing enclosing snapshots for local components. */
+  #extensionDefinition(context) {
+    if (context.definition) return context.definition;
+    const profile = context.element.type?.find(type => type.code === 'Extension')?.profile?.[0];
+    if (!profile && context.parent) {
+      const parent = this.#extensionDefinition(context.parent);
+      context.definition = { elements: parent.elements,
+        rootId: parent.rootId + context.root.slice(context.parent.root.length) };
+    } else {
+      const canonical = profile || 'http://hl7.org/fhir/StructureDefinition/Extension';
+      if (!this.#definitions.has(canonical)) {
+        this.#definitions.set(canonical, this.#snapshotIndex(this.package.resolve(canonical)));
+      }
+      const elements = this.#definitions.get(canonical);
+      context.definition = { elements, rootId: elements.keys().next().value };
+    }
+    return context.definition;
+  }
+
+  /** Prefer the reference snapshot; consult the cached definition only for missing elements. */
+  #extensionComparison(context, id, referenceElements) {
+    const reference = context.referenceRoot &&
+      referenceElements.get(context.referenceRoot.id + id.slice(context.root.length));
+    if (reference) return { baseline: reference, reference };
+    const { elements, rootId } = this.#extensionDefinition(context);
+    const baseId = rootId + id.slice(context.root.length);
+    return { baseline: elements.get(baseId) || this.#sliceBaseline(baseId, elements, elements) };
+  }
+
+  #elementDifferential(element, baseline, { skipType = false, declareSlice = false } = {}) {
+    const { id } = element;
+    const change = { id, path: element.path };
+    for (const key of ['min', 'max']) {
+      if (element[key] === undefined || baseline[key] === undefined) {
+        throw new Error(`${id}: ${key} is missing from an input or referenced snapshot`);
+      }
+      if (element[key] !== baseline[key]) change[key] = element[key];
+    }
+
+    const binding = {};
+    for (const key of ['valueSet', 'strength']) {
+      const value = element.binding?.[key];
+      const baselineValue = baseline.binding?.[key];
+      let matches = value === baselineValue;
+      if (key === 'valueSet') {
+        matches = this.#valueSetsMatch(value, baselineValue);
+      }
+      if (value !== undefined && !matches) binding[key] = value;
+    }
+
+    const additionalBindings = this.#additionalBindings(element.binding, baseline.binding);
+    if (additionalBindings.length) binding.extension = additionalBindings;
+    if (Object.keys(binding).length) {
+      binding.strength = element.binding?.strength ?? baseline.binding?.strength;
+      if (binding.strength === undefined) throw new Error(`${id}: binding.strength is required`);
+      change.binding = binding;
+    }
+    if (element.comment !== undefined && element.comment !== baseline.comment) {
+      change.comment = element.comment;
+    }
+
+    const sliceConstraints = Object.keys(element).filter(key =>
+      (id.includes(':') && /^(fixed|pattern)[A-Z]/.test(key)) || /^value(?:[A-Z]|\[x\])/.test(key));
+    for (const key of sliceConstraints) {
+      if (!isDeepStrictEqual(element[key], baseline[key])) {
+        change[key] = structuredClone(element[key]);
+      }
+    }
+    if (id.includes(':') && element.type !== undefined &&
+        !skipType && !this.#typesMatch(element.type, baseline.type)) {
+      change.type = this.#typeProperties(element.type);
+    }
+    if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change ||
+        'slicing' in change || 'type' in change || sliceConstraints.some(key => key in change) ||
+        declareSlice) {
+      if (element.sliceName !== undefined) change.sliceName = element.sliceName;
+      return change;
+    }
+    return undefined;
+  }
+
+  /** Compare a complete extension before the main snapshot walk. */
+  #extensionDifferential(extensionRoot, sourceElements, referenceElements, unmatched, slicingChanges) {
+    const contains = id => id === extensionRoot || id.startsWith(`${extensionRoot}.`);
+    const extensionElements = new Map([...sourceElements].filter(([id]) => contains(id)));
+    const matches = this.#matchingElementsForExtensionElements(extensionElements, referenceElements);
+    const contexts = [];
+    for (const [root, referenceRoot] of matches) {
+      const parent = contexts.findLast(context => root.startsWith(`${context.root}.`));
+      contexts.push({ root, referenceRoot, parent, element: extensionElements.get(root) });
+    }
+    const changes = new Map();
+    for (const [id, element] of extensionElements) {
+      const owner = contexts.findLast(item => id === item.root || id.startsWith(`${item.root}.`));
+      const { baseline, reference } = this.#extensionComparison(owner, id, referenceElements);
+      if (!baseline) {
+        unmatched.push(id);
+        continue;
+      }
+      const change = this.#elementDifferential(element, baseline, { skipType: id === owner.root && !reference });
+      if (change) changes.set(id, change);
+    }
+    // Populate roots only after real changes have been found, working from children to parents.
+    for (const owner of [...contexts].reverse()) {
+      const root = owner.root;
+      if (!contains(root) || ![...changes.keys()].some(id => id === root || id.startsWith(`${root}.`))) continue;
+      const element = owner.element;
+      const change = changes.get(root) || { id: root, path: element.path };
+      change.sliceName = element.sliceName;
+      change.type = this.#typeProperties(element.type) || [{ code: 'Extension' }];
+      const url = sourceElements.get(`${root}.url`);
+      const canonical = url?.fixedUri || url?.fixedUrl || url?.patternUri || url?.patternUrl;
+      const type = change.type.find(item => item.code === 'Extension');
+      if (type && !type.profile?.length && canonical && /^[A-Za-z][A-Za-z0-9+.-]*:/.test(canonical)) {
+        type.profile = [canonical];
+      }
+      changes.set(root, change);
+      if (!owner.referenceRoot) this.#addSlicing(element, sourceElements, referenceElements, changes);
+    }
+    for (const [id, change] of changes) {
+      if (!contains(id)) slicingChanges.set(id, { ...slicingChanges.get(id), ...change });
+    }
+    return [...sourceElements.keys()].filter(id => contains(id) && changes.has(id)).map(id => changes.get(id));
+  }
+
   /**
    * Build a differential for this.input against the referenced profile snapshot.
    * Copies metadata preceding snapshot, removes imposeProfile/compliesWithProfile
@@ -292,8 +420,12 @@ class ProfileCardinalityRebaser {
    * their unsliced input element when a corresponding reference base exists.
    * Extension slices instead match by canonical URL, slice name, and parent;
    * missing extension elements use the extension definition snapshot resolved
-   * from the selected package or its cached dependencies. Inline extensions
-   * without a type profile use the core Extension definition.
+   * from the selected package or its cached dependencies. Local components of
+   * complex extensions use slices within the enclosing extension definition.
+   * Only standalone inline extensions fall back to the core Extension definition.
+   * Each extension is retained as a group only if a supported property differs.
+   * Nonempty groups include their root path, sliceName, and type; unchanged root
+   * declarations alone do not cause a group to be emitted.
    *
    * Compares min, max, comment, binding valueSet/strength, additional bindings,
    * and value-prefixed properties. Within slices, also compares fixed- and
@@ -314,22 +446,23 @@ class ProfileCardinalityRebaser {
     const input = this.input;
     const sourceElements = this.#snapshotIndex(input);
     const referenceElements = this.#snapshotIndex(referenced);
-    const extensionContexts = this.#extensionContexts(sourceElements, referenceElements);
-    const extensionRoots = [...extensionContexts.keys()].sort((a, b) => b.length - a.length);
-    const extensionBases = new Map();
-    const definitions = new Map();
+
+    const unmatched = [];
+    const changes = new Map();
+    
+    // Build differentials for extensions
+    const extensionDifferentials = new Map();
+    const extensionRoots = [];
+    const extensionElements = [...sourceElements.values()]
+      .filter(element => element.sliceName !== undefined && /\.(modifierExtension|extension)$/.test(element.path))
+      .sort((a, b) => a.id.length - b.id.length);
+    for (const element of extensionElements) {
+      if (extensionRoots.some(root => element.id.startsWith(`${root}.`))) continue;
+      extensionRoots.push(element.id);
+    }
     for (const root of extensionRoots) {
-      const referenceRoot = extensionContexts.get(root);
-      const needsBase = !referenceRoot || [...sourceElements.keys()].some(id =>
-        id.startsWith(`${root}.`) && !referenceElements.has(referenceRoot.id + id.slice(root.length)));
-      if (!needsBase) continue;
-      const element = sourceElements.get(root);
-      const canonical = element.type?.find(type => type.code === 'Extension')?.profile?.[0] ||
-        'http://hl7.org/fhir/StructureDefinition/Extension';
-      if (!definitions.has(canonical)) {
-        definitions.set(canonical, this.#snapshotIndex(this.package.resolve(canonical)));
-      }
-      extensionBases.set(root, definitions.get(canonical));
+      extensionDifferentials.set(root, this.#extensionDifferential(
+        root, sourceElements, referenceElements, unmatched, changes));
     }
 
     // Create new profile based on source metadata, skipping the compliesWith or imposeProfile
@@ -345,83 +478,32 @@ class ProfileCardinalityRebaser {
     }
     output.differential = { element: [] };
 
-    // Walk the snapshot elements of the input file to compare them with the compliesWith profile.    
-    const unmatched = [];
-    const changes = new Map();
+    // Slicing declarations must be known before their base element is emitted.
     for (const [id, element] of sourceElements) {
-      const extensionRoot = extensionRoots.find(root => id === root || id.startsWith(`${root}.`));
-      const referenceRoot = extensionContexts.get(extensionRoot);
-      const extensionBaseline = referenceRoot && referenceElements.get(referenceRoot.id + id.slice(extensionRoot.length));
-      const baseElements = extensionBases.get(extensionRoot);
-      const baseRoot = baseElements?.keys().next().value;
-      const baseId = baseRoot && baseRoot + id.slice(extensionRoot.length);
-      const definitionBaseline = baseElements && (baseElements.get(baseId) || this.#sliceBaseline(baseId, baseElements, baseElements));
-      const isNew = extensionRoot !== undefined ? !extensionBaseline : !referenceElements.has(id);
-      const baseline = extensionRoot !== undefined ? (extensionBaseline || definitionBaseline)
-        : referenceElements.get(id) || this.#sliceBaseline(id, sourceElements, referenceElements);
+      if (!referenceElements.has(id) && id.includes(':') &&
+          !extensionRoots.some(root => id === root || id.startsWith(`${root}.`))) {
+        this.#addSlicing(element, sourceElements, referenceElements, changes);
+      }
+    }
+    // Insert each prebuilt extension once; its remaining snapshot elements are skipped.
+    for (const [id, element] of sourceElements) {
+      const extension = extensionRoots.find(root => id === root || id.startsWith(`${root}.`));
+      if (extension) {
+        if (id === extension) output.differential.element.push(...extensionDifferentials.get(id));
+        continue;
+      }
+      const baseline = referenceElements.get(id) || this.#sliceBaseline(id, sourceElements, referenceElements);
       if (!baseline) {
         unmatched.push(id);
         continue;
       }
-      if (isNew) this.#addSlicing(element, sourceElements, referenceElements, changes);
-
-      const change = changes.get(id) || { id, path: element.path };
-      for (const key of ['min', 'max']) {
-        if (element[key] === undefined || baseline[key] === undefined) {
-          throw new Error(`${id}: ${key} is missing from an input or referenced snapshot`);
-        }
-        if (element[key] !== baseline[key]) change[key] = element[key];
-      }
-
-      const binding = {};
-      for (const key of ['valueSet', 'strength']) {
-        const value = element.binding?.[key];
-        const baselineValue = baseline.binding?.[key];
-        let matches = value === baselineValue;
-        if (key === 'valueSet') {
-          matches = this.#valueSetsMatch(value, baselineValue);
-        }
-        if (value !== undefined && !matches) binding[key] = value;
-      }
-
-      const additionalBindings = this.#additionalBindings(element.binding, baseline.binding);
-      if (additionalBindings.length) binding.extension = additionalBindings;
-      if (Object.keys(binding).length) {
-        binding.strength = element.binding?.strength ?? baseline.binding?.strength;
-        if (binding.strength === undefined) throw new Error(`${id}: binding.strength is required`);
-        change.binding = binding;
-      }
-      if (element.comment !== undefined && element.comment !== baseline.comment) {
-        change.comment = element.comment;
-      }
-
-      const sliceConstraints = Object.keys(element).filter(key =>
-        (id.includes(':') && /^(fixed|pattern)[A-Z]/.test(key)) || /^value(?:[A-Z]|\[x\])/.test(key));
-      for (const key of sliceConstraints) {
-        if (!isDeepStrictEqual(element[key], baseline[key])) {
-          change[key] = structuredClone(element[key]);
-        }
-      }
-      if (id.includes(':') && element.type !== undefined && !this.#typesMatch(element.type, baseline.type)) {
-        change.type = this.#typeProperties(element.type);
-      }
-      if (id === extensionRoot) {
-        // Keep standalone extension references explicit; local child URLs are not profile canonicals.
-        const url = sourceElements.get(`${id}.url`);
-        const profiles = element.type?.find(type => type.code === 'Extension')?.profile;
-        const canonical = url?.fixedUri || url?.fixedUrl || url?.patternUri || url?.patternUrl;
-        if (profiles?.length || (canonical && /^[A-Za-z][A-Za-z0-9+.-]*:/.test(canonical))) {
-          change.type = [{ code: 'Extension', profile: profiles?.length ? [...profiles] : [canonical] }];
-        }
-      }
-      if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change ||
-          'slicing' in change || 'type' in change || sliceConstraints.some(key => key in change) ||
-          (isNew && element.sliceName !== undefined)) {
-        if (element.sliceName !== undefined) change.sliceName = element.sliceName;
-        changes.set(id, change);
-      }
+      const isNew = !referenceElements.has(id);
+      const change = this.#elementDifferential(element, baseline, {
+        declareSlice: isNew && element.sliceName !== undefined,
+      });
+      if (change) changes.set(id, { ...changes.get(id), ...change });
+      if (changes.has(id)) output.differential.element.push(changes.get(id));
     }
-    output.differential.element = [...sourceElements.keys()].filter(id => changes.has(id)).map(id => changes.get(id));
     return { output, unmatched, referencedProfileName: referenced.name || referenced.id || referenced.url };
   }
 }
