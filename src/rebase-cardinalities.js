@@ -19,6 +19,126 @@ function readJson(filename) {
   return JSON.parse((fs.readFileSync(filename, 'utf8')).replace(/^\uFEFF/, ''));
 }
 
+/**
+ * A profile comparison CSV report. Differences are Markdown item text strings;
+ * their detailed comparison syntax is intentionally left to the caller.
+ *
+ * The first two CSV records each contain one Markdown profile link. The third
+ * contains Element,Differences,Notes. Each subsequent record represents one
+ * element, with a multiline Markdown bullet list and a Markdown note.
+ */
+class ProfileComparisonReport {
+  constructor({ profile: profileName, profileCanonical, referencedProfile: referencedProfileName, referencedProfileCanonical, elements = [] }) {
+    this.profileName = profileName;
+    this.profileCanonical = profileCanonical;
+    this.referencedProfileName = referencedProfileName;
+    this.referencedProfileCanonical = referencedProfileCanonical;
+    this.elements = elements.map(({ path, differences = [], note = '' }) => ({
+      path, differences: [...differences], note,
+    }));
+  }
+
+  /** Read a UTF-8 CSV file synchronously. */
+  static read(filename) {
+    return this.fromCsv(fs.readFileSync(filename, 'utf8'));
+  }
+
+  /** Write a UTF-8 CSV file synchronously, replacing any existing file. */
+  write(filename) {
+    fs.writeFileSync(filename, this.toCsv(), 'utf8');
+  }
+
+  static fromCsv(csv) {
+    const rows = this.#parseCsv(csv.replace(/^\uFEFF/, ''));
+    if (rows.length < 3) throw new Error('Report requires two profile links and a header row');
+    const [profile, profileCanonical] = this.#readLink(rows[0]);
+    const [referencedProfile, referencedProfileCanonical] = this.#readLink(rows[1]);
+    if (rows[2].join(',') !== 'Element,Differences,Notes' || rows[2].length !== 3) {
+      throw new Error('Expected report header: Element,Differences,Notes');
+    }
+    const elements = rows.slice(3).map((row, index) => {
+      if (row.length !== 3) throw new Error(`Report record ${index + 4} must have three columns`);
+      return { path: row[0], differences: this.#readDifferences(row[1]), note: row[2] };
+    });
+    return new this({ profile, profileCanonical, referencedProfile, referencedProfileCanonical, elements });
+  }
+
+  toCsv() {
+    const rows = [
+      [ProfileComparisonReport.#link(this.profileName, this.profileCanonical)],
+      [ProfileComparisonReport.#link(this.referencedProfileName, this.referencedProfileCanonical)],
+      ['Element', 'Differences', 'Notes'],
+      ...this.elements.map(({ path, differences, note }) => [
+        path,
+        differences.map(item => `- ${item.replace(/\r?\n/g, '\n  ')}`).join('\n'),
+        note,
+      ]),
+    ];
+    return rows.map(row => row.map(ProfileComparisonReport.#quote).join(',')).join('\r\n') + '\r\n';
+  }
+
+  static #link(name, canonical) {
+    if (typeof name !== 'string' || typeof canonical !== 'string' || /[\r\n]/.test(name + canonical)) {
+      throw new Error('Profile names and canonicals must be single-line strings');
+    }
+    const escape = value => value.replace(/[\\\[\]()]/g, '\\$&');
+    return `[${escape(name)}](${escape(canonical)})`;
+  }
+
+  static #readLink(row) {
+    const match = row.length === 1 && /^\[((?:\\.|[^\]\\])*)\]\(((?:\\.|[^)\\])*)\)$/.exec(row[0]);
+    if (!match) throw new Error('Expected a single Markdown profile link');
+    return match.slice(1).map(value => value.replace(/\\([\\\[\]()])/g, '$1'));
+  }
+
+  static #readDifferences(markdown) {
+    if (!markdown) return [];
+    const differences = [];
+    for (const line of markdown.split(/\r?\n/)) {
+      if (line.startsWith('- ')) differences.push(line.slice(2));
+      else if (line.startsWith('  ') && differences.length) differences[differences.length - 1] += '\n' + line.slice(2);
+      else throw new Error('Differences must be Markdown bullets with indented continuation lines');
+    }
+    return differences;
+  }
+
+  static #quote(value) {
+    if (typeof value !== 'string') throw new Error('CSV fields must be strings');
+    return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  }
+
+  /** Parse CSV without splitting quoted multiline fields or coercing cell values. */
+  static #parseCsv(csv) {
+    const rows = [];
+    let row = [];
+    let field = '';
+    let quoted = false;
+    let closed = false;
+    for (let i = 0; i < csv.length; i++) {
+      const char = csv[i];
+      if (quoted) {
+        if (char !== '"') field += char;
+        else if (csv[i + 1] === '"') { field += '"'; i++; }
+        else { quoted = false; closed = true; }
+      } else if (char === ',') {
+        row.push(field); field = ''; closed = false;
+      } else if (char === '\r' || char === '\n') {
+        if (char === '\r' && csv[i + 1] === '\n') i++;
+        row.push(field); rows.push(row);
+        row = []; field = ''; closed = false;
+      } else if (char === '"' && !field && !closed) {
+        quoted = true;
+      } else {
+        if (closed || char === '"') throw new Error('Invalid quoting in CSV field');
+        field += char;
+      }
+    }
+    if (quoted) throw new Error('Unterminated quoted CSV field');
+    if (row.length || field || closed) { row.push(field); rows.push(row); }
+    return rows;
+  }
+}
+
 class FhirPackage {
   constructor(ig, cache = path.join(homedir(), '.fhir', 'packages')) {
     this.ig = ig;
@@ -584,4 +704,4 @@ if (require.main === module) {
   commander.program.parse();
 }
 
-module.exports = { DiffBuilder, FhirPackage };
+module.exports = { DiffBuilder, FhirPackage, ProfileComparisonReport };
