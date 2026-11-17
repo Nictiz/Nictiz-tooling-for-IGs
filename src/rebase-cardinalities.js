@@ -525,7 +525,7 @@ function inputFiles(inputs) {
 }
 
 function run(inputs, options) {
-  const destination = path.resolve(options.output);
+  const rebasedProfiles = options.rebasedProfiles ? path.resolve(options.rebasedProfiles) : undefined;
   const fhirPackage = new FhirPackage(options.ig, options.cache);
   let written = 0;
   const destinations = new Set();
@@ -538,18 +538,20 @@ function run(inputs, options) {
         continue;
       }
       const { output, unmatched, referencedProfileName } = result;
-      const target = path.join(destination, path.basename(filename));
-      if (target === filename) throw new Error('Output would overwrite the input profile');
-      if (destinations.has(target)) throw new Error(`Duplicate output filename: ${target}`);
-      destinations.add(target);
-      fs.mkdirSync(destination, { recursive: true });
-      fs.writeFileSync(target, JSON.stringify(output, null, 2) + '\n');
-      written++;
+      if (rebasedProfiles) {
+        const target = path.join(rebasedProfiles, path.basename(filename));
+        if (target === filename) throw new Error('Output would overwrite the input profile');
+        if (destinations.has(target)) throw new Error(`Duplicate output filename: ${target}`);
+        destinations.add(target);
+        fs.mkdirSync(rebasedProfiles, { recursive: true });
+        fs.writeFileSync(target, JSON.stringify(output, null, 2) + '\n');
+        written++;
+      }
 
       const skipped = unmatched.length
         ? `; skipped ${unmatched.length} elements not present in ${referencedProfileName}:\n${unmatched.map(id => `  - ${id}`).join('\n')}`
         : '';
-      console.log(`- Rebased ${path.basename(target)} (${output.differential.element.length} changed elements)${skipped}`);
+      console.log(`- Rebased ${path.basename(filename)} (${output.differential.element.length} changed elements)${skipped}`);
     } catch (error) {
       console.error(`- Skipped ${path.basename(filename)}: ${error.message}`);
       process.exitCode = 1;
@@ -570,7 +572,14 @@ if (require.main === module) {
       return value;
     })
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
-    .requiredOption('--output <directory>', 'Output directory')
+    .option('--rebasedProfiles <directory>', 'Output directory for rebased JSON profiles')
+    .option('--markdownReports <directory>', 'Output directory for Markdown reports (not yet implemented)')
+    .hook('preAction', command => {
+      const options = command.opts();
+      if (!options.rebasedProfiles && !options.markdownReports) {
+        command.error('At least one of --rebasedProfiles or --markdownReports is required.');
+      }
+    })
     .action(run);
   commander.program.parse();
 }
