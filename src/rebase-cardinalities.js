@@ -92,7 +92,7 @@ class FhirPackage {
   }
 }
 
-class ProfileCardinalityRebaser {
+class DiffBuilder {
   #definitions = new Map();
 
   constructor(input, fhirPackage) {
@@ -532,7 +532,7 @@ function run(inputs, options) {
   for (const filename of inputFiles(inputs)) {
     try {
       const input = readJson(filename);
-      const result = new ProfileCardinalityRebaser(input, fhirPackage).rebase();
+      const result = new DiffBuilder(input, fhirPackage).rebase();
       if (result.skipped) {
         console.log(`- Skipped ${path.basename(filename)}: ${result.skipped}`);
         continue;
@@ -573,15 +573,15 @@ if (require.main === module) {
     })
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
     .option('--rebasedProfiles <directory>', 'Output directory for rebased JSON profiles')
-    .option('--markdownReports <directory>', 'Output directory for Markdown reports (not yet implemented)')
+    .option('--csvReports <directory>', 'Output directory for CSV reports (not yet implemented)')
     .hook('preAction', command => {
       const options = command.opts();
-      if (!options.rebasedProfiles && !options.markdownReports) {
-        command.error('At least one of --rebasedProfiles or --markdownReports is required.');
+      if (!options.rebasedProfiles && !options.csvReports) {
+        command.error('At least one of --rebasedProfiles or --csvReports is required.');
       }
     })
     .action(run);
   commander.program.parse();
 }
 
-module.exports = { ProfileCardinalityRebaser, FhirPackage };
+module.exports = { DiffBuilder, FhirPackage };
