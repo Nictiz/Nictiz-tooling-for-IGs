@@ -20,8 +20,8 @@ function readJson(filename) {
 }
 
 /**
- * A profile comparison CSV report. Differences are Markdown item text strings;
- * their detailed comparison syntax is intentionally left to the caller.
+ * A profile comparison CSV report. Differences are keyed by property, with
+ * source and target values, and serialized using property-specific Markdown bullets.
  *
  * The first two CSV records each contain one Markdown profile link. The third
  * contains Element,Differences,Notes. Each subsequent record represents one
@@ -38,16 +38,10 @@ class ProfileComparisonReport {
   }
 
   static fromFileIfExists(filePath) {
-    const report = new this(filePath);
-
+    const report = new this();
+    report.filePath = filePath;
     if (fs.existsSync(filePath)) {
-      try {
-        report.load(fs.readFileSync(filePath, 'utf8'));
-      } catch (error) {
-        throw new Error(`Could not load csv file ${csvFile}: ${error}`);
-      }
-    } else {
-      report.filePath = filePath;
+      report.load(filePath);
     }
     return report;
   }
@@ -59,21 +53,38 @@ class ProfileComparisonReport {
     fs.writeFileSync(target, this.toCsv(), 'utf8');
   }
 
-  static load(filePath) {
+  load(filePath) {
     this.filePath = filePath;
     const csv = fs.readFileSync(filePath, 'utf8');
 
-    const rows = this.#parseCsv(csv.replace(/^\uFEFF/, ''));
+    const rows = ProfileComparisonReport.#parseCsv(csv.replace(/^\uFEFF/, ''));
     if (rows.length < 3) throw new Error('Report requires two profile links and a header row');
-    [this.profileName, this.profileCanonical] = this.#readLink(rows[0]);
-    [this.referencedProfileName, this.referencedProfileCanonical] = this.#readLink(rows[1]);
+    [this.profileName, this.profileCanonical] = ProfileComparisonReport.#readLink(rows[0]);
+    [this.referencedProfileName, this.referencedProfileCanonical] = ProfileComparisonReport.#readLink(rows[1]);
     if (rows[2].join(',') !== 'Element,Differences,Notes' || rows[2].length !== 3) {
       throw new Error('Expected report header: Element,Differences,Notes');
     }
     this.elements = rows.slice(3).map((row, index) => {
       if (row.length !== 3) throw new Error(`Report record ${index + 4} must have three columns`);
-      return { path: row[0], differences: this.#readDifferences(row[1]), note: row[2] };
+      return { path: row[0], differences: ProfileComparisonReport.#readDifferences(row[1]), note: row[2] };
     });
+  }
+
+  /** Add a property difference once; an existing entry must describe the same values. */
+  addDifference(element, property, source, target) {
+    let entry = this.elements.find(item => item.path === element);
+    const difference = { source, target };
+    if (entry && Object.hasOwn(entry.differences, property)) {
+      if (!isDeepStrictEqual(entry.differences[property], difference)) {
+        throw new Error(`${element}: existing ${property} difference does not match ${source} versus ${target}`);
+      }
+      return;
+    }
+    if (!entry) {
+      entry = { path: element, differences: {}, note: '' };
+      this.elements.push(entry);
+    }
+    entry.differences[property] = difference;
   }
 
   toCsv() {
@@ -83,7 +94,10 @@ class ProfileComparisonReport {
       ['Element', 'Differences', 'Notes'],
       ...this.elements.map(({ path, differences, note }) => [
         path,
-        differences.map(item => `- ${item.replace(/\r?\n/g, '\n  ')}`).join('\n'),
+        Object.entries(differences).map(([property, { source, target }]) => {
+          if (property !== 'cardinality') throw new Error(`Unsupported report difference: ${property}`);
+          return `* Cardinality: ${source} versus ${target}`;
+        }).join('\n'),
         note,
       ]),
     ];
@@ -105,12 +119,16 @@ class ProfileComparisonReport {
   }
 
   static #readDifferences(markdown) {
-    if (!markdown) return [];
-    const differences = [];
+    const differences = {};
+    if (!markdown) return differences;
     for (const line of markdown.split(/\r?\n/)) {
-      if (line.startsWith('- ')) differences.push(line.slice(2));
-      else if (line.startsWith('  ') && differences.length) differences[differences.length - 1] += '\n' + line.slice(2);
-      else throw new Error('Differences must be Markdown bullets with indented continuation lines');
+      const match = /^\* Cardinality: (\d+\.\.(?:\d+|\*)) versus (\d+\.\.(?:\d+|\*))$/.exec(line);
+      if (!match) throw new Error(`Unsupported report difference: ${line}`);
+      const difference = { source: match[1], target: match[2] };
+      if (differences.cardinality && !isDeepStrictEqual(differences.cardinality, difference)) {
+        throw new Error('Conflicting cardinality differences in CSV report');
+      }
+      differences.cardinality = difference;
     }
     return differences;
   }
@@ -465,6 +483,10 @@ class DiffBuilder {
         throw new Error(`${id}: ${key} is missing from an input or referenced snapshot`);
       }
       if (element[key] !== referenceElement[key]) diffElement[key] = element[key];
+    }
+    if ('min' in diffElement || 'max' in diffElement) {
+      this.comparisonReport?.addDifference(id, 'cardinality',
+        `${element.min}..${element.max}`, `${referenceElement.min}..${referenceElement.max}`);
     }
 
     const binding = {};
