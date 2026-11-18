@@ -29,10 +29,14 @@ function readJson(filename) {
  */
 class ProfileComparisonReport {
   static Difference = class Difference {
-    static #keys = new Set(['cardinality']);
+    static #labels = new Map([
+      ['cardinality', 'Cardinality'],
+      ['valueSet', 'ValueSet'],
+      ['bindingStrength', 'Binding strength'],
+    ]);
 
     constructor(key, source, target) {
-      if (!Difference.#keys.has(key)) throw new Error(`Unsupported report difference: ${key}`);
+      if (!Difference.#labels.has(key)) throw new Error(`Unsupported report difference: ${key}`);
       if (typeof source !== 'string' || typeof target !== 'string') {
         throw new Error('Difference source and target must be strings');
       }
@@ -45,13 +49,14 @@ class ProfileComparisonReport {
     }
 
     toMarkdown() {
-      return `* Cardinality: ${this.source} versus ${this.target}`;
+      return `* ${Difference.#labels.get(this.key)}: ${this.source} versus ${this.target}`;
     }
 
     static fromMarkdown(markdown) {
-      const match = /^\* Cardinality: (\d+\.\.(?:\d+|\*)) versus (\d+\.\.(?:\d+|\*))$/.exec(markdown);
-      if (!match) throw new Error(`Unsupported report difference: ${markdown}`);
-      return new Difference('cardinality', match[1], match[2]);
+      const match = /^\* ([^:]+): (.*?) versus (.*)$/.exec(markdown);
+      const key = match && [...Difference.#labels].find(([, label]) => label === match[1])?.[0];
+      if (!key) throw new Error(`Unsupported report difference: ${markdown}`);
+      return new Difference(key, match[2], match[3]);
     }
   };
 
@@ -531,7 +536,11 @@ class DiffBuilder {
       if (key === 'valueSet') {
         matches = this.#valueSetsMatch(value, referenceValue);
       }
-      if (value !== undefined && !matches) binding[key] = value;
+      if (value !== undefined && !matches) {
+        binding[key] = value;
+        this.comparisonReport?.addDifference(id, key === 'valueSet' ? 'valueSet' : 'bindingStrength',
+          value, referenceValue ?? '');
+      }
     }
 
     const additionalBindings = this.#additionalBindings(element.binding, referenceElement.binding);
