@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+!/usr/bin/env node
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -28,39 +28,44 @@ function readJson(filename) {
  * element, with a multiline Markdown bullet list and a Markdown note.
  */
 class ProfileComparisonReport {
-  constructor({ profile: profileName, profileCanonical, referencedProfile: referencedProfileName, referencedProfileCanonical, elements = [] }) {
-    this.profileName = profileName;
-    this.profileCanonical = profileCanonical;
+  constructor(filePath = null) {
+    this.filePath = filePath;
+    if (filePath) {
+      this.initFromCsv(fs.readFileSync(filePath, 'utf8'));
+      return;
+    }
+
+    this.profileName = null;
+    this.profileCanonical = null;
     this.referencedProfileName = referencedProfileName;
     this.referencedProfileCanonical = referencedProfileCanonical;
-    this.elements = elements.map(({ path, differences = [], note = '' }) => ({
-      path, differences: [...differences], note,
-    }));
+    this.elements = [];
   }
 
-  /** Read a UTF-8 CSV file synchronously. */
-  static read(filename) {
-    return this.fromCsv(fs.readFileSync(filename, 'utf8'));
+  static fromFileIfExists(filePath) {
+    if (fs.existsSync(filePath)) {
+      return new this(filePath);
+    }
+    return new this();
   }
 
   /** Write a UTF-8 CSV file synchronously, replacing any existing file. */
-  write(filename) {
-    fs.writeFileSync(filename, this.toCsv(), 'utf8');
+  write(filePath = null) {
+    fs.writeFileSync(filePath ? filePath : this.filePath, this.toCsv(), 'utf8');
   }
 
-  static fromCsv(csv) {
+  static initFromCsv(csv) {
     const rows = this.#parseCsv(csv.replace(/^\uFEFF/, ''));
     if (rows.length < 3) throw new Error('Report requires two profile links and a header row');
-    const [profile, profileCanonical] = this.#readLink(rows[0]);
-    const [referencedProfile, referencedProfileCanonical] = this.#readLink(rows[1]);
+    [this.profileName, this.profileCanonical] = this.#readLink(rows[0]);
+    [this.referencedProfileName, this.referencedProfileCanonical] = this.#readLink(rows[1]);
     if (rows[2].join(',') !== 'Element,Differences,Notes' || rows[2].length !== 3) {
       throw new Error('Expected report header: Element,Differences,Notes');
     }
-    const elements = rows.slice(3).map((row, index) => {
+    this.elements = rows.slice(3).map((row, index) => {
       if (row.length !== 3) throw new Error(`Report record ${index + 4} must have three columns`);
       return { path: row[0], differences: this.#readDifferences(row[1]), note: row[2] };
     });
-    return new this({ profile, profileCanonical, referencedProfile, referencedProfileCanonical, elements });
   }
 
   toCsv() {
@@ -215,16 +220,17 @@ class FhirPackage {
 class DiffBuilder {
   #definitions = new Map();
 
-  constructor(input, fhirPackage) {
-    this.input = input;
+  constructor(sourceProfile, fhirPackage, comparisonReport) {
+    this.sourceProfile = sourceProfile;
     this.package = fhirPackage;
+    this.comparisonReport = comparisonReport;
   }
 
   rebase() {
-    if (this.input.resourceType !== 'StructureDefinition') {
+    if (this.sourceProfile.resourceType !== 'StructureDefinition') {
       return { skipped: 'not a StructureDefinition' };
     }
-    const extensions = (this.input.extension || []).filter(extension => PROFILE_EXTENSIONS.has(extension.url));
+    const extensions = (this.sourceProfile.extension || []).filter(extension => PROFILE_EXTENSIONS.has(extension.url));
     if (!extensions.length) {
       return { skipped: 'no imposeProfile or compliesWithProfile extension' };
     }
@@ -234,6 +240,14 @@ class DiffBuilder {
     const canonicals = [...new Set(extensions.map(extension => extension.valueCanonical))];
     if (canonicals.length !== 1) throw new Error(`Multiple distinct referenced profiles: ${canonicals.join(', ')}`);
     const referenced = this.package.resolve(canonicals[0]);
+
+    if (this.comparisonReport) {
+      this.comparisonReport.profileName = this.sourceProfile.name;
+      this.comparisonReport.profileCanonical = this.sourceProfile.url;
+      this.comparisonReport.referencedProfileName = referenced.name;
+      this.comparisonReport.referencedProfileName = referenced.url;
+    }
+
     const result = this.#createDifferential(referenced);
     result.output.baseDefinition = canonicals[0];
     return result;
@@ -435,54 +449,54 @@ class DiffBuilder {
     return { baseline: elements.get(baseId) || this.#sliceBaseline(baseId, elements, elements) };
   }
 
-  #elementDifferential(element, baseline, { skipType = false, declareSlice = false } = {}) {
+  #elementDifferential(element, referenceElement, { skipType = false, declareSlice = false } = {}) {
     const { id } = element;
-    const change = { id, path: element.path };
+    const diffElement = { id, path: element.path };
     for (const key of ['min', 'max']) {
-      if (element[key] === undefined || baseline[key] === undefined) {
+      if (element[key] === undefined || referenceElement[key] === undefined) {
         throw new Error(`${id}: ${key} is missing from an input or referenced snapshot`);
       }
-      if (element[key] !== baseline[key]) change[key] = element[key];
+      if (element[key] !== referenceElement[key]) diffElement[key] = element[key];
     }
 
     const binding = {};
     for (const key of ['valueSet', 'strength']) {
       const value = element.binding?.[key];
-      const baselineValue = baseline.binding?.[key];
-      let matches = value === baselineValue;
+      const referenceValue = referenceElement.binding?.[key];
+      let matches = value === referenceValue;
       if (key === 'valueSet') {
-        matches = this.#valueSetsMatch(value, baselineValue);
+        matches = this.#valueSetsMatch(value, referenceValue);
       }
       if (value !== undefined && !matches) binding[key] = value;
     }
 
-    const additionalBindings = this.#additionalBindings(element.binding, baseline.binding);
+    const additionalBindings = this.#additionalBindings(element.binding, referenceElement.binding);
     if (additionalBindings.length) binding.extension = additionalBindings;
     if (Object.keys(binding).length) {
-      binding.strength = element.binding?.strength ?? baseline.binding?.strength;
+      binding.strength = element.binding?.strength ?? referenceElement.binding?.strength;
       if (binding.strength === undefined) throw new Error(`${id}: binding.strength is required`);
-      change.binding = binding;
+      diffElement.binding = binding;
     }
-    if (element.comment !== undefined && element.comment !== baseline.comment) {
-      change.comment = element.comment;
+    if (element.comment !== undefined && element.comment !== referenceElement.comment) {
+      diffElement.comment = element.comment;
     }
 
     const sliceConstraints = Object.keys(element).filter(key =>
       (id.includes(':') && /^(fixed|pattern)[A-Z]/.test(key)) || /^value(?:[A-Z]|\[x\])/.test(key));
     for (const key of sliceConstraints) {
-      if (!isDeepStrictEqual(element[key], baseline[key])) {
-        change[key] = structuredClone(element[key]);
+      if (!isDeepStrictEqual(element[key], referenceElement[key])) {
+        diffElement[key] = structuredClone(element[key]);
       }
     }
     if (id.includes(':') && element.type !== undefined &&
-        !skipType && !this.#typesMatch(element.type, baseline.type)) {
-      change.type = this.#typeProperties(element.type);
+        !skipType && !this.#typesMatch(element.type, referenceElement.type)) {
+      diffElement.type = this.#typeProperties(element.type);
     }
-    if ('min' in change || 'max' in change || 'binding' in change || 'comment' in change ||
-        'slicing' in change || 'type' in change || sliceConstraints.some(key => key in change) ||
+    if ('min' in diffElement || 'max' in diffElement || 'binding' in diffElement || 'comment' in diffElement ||
+        'slicing' in diffElement || 'type' in diffElement || sliceConstraints.some(key => key in diffElement) ||
         declareSlice) {
-      if (element.sliceName !== undefined) change.sliceName = element.sliceName;
-      return change;
+      if (element.sliceName !== undefined) diffElement.sliceName = element.sliceName;
+      return diffElement;
     }
     return undefined;
   }
@@ -563,7 +577,7 @@ class DiffBuilder {
    * @throws {Error} For invalid snapshots, ambiguous extension matches, or missing cardinalities.
    */
   #createDifferential(referenced) {
-    const input = this.input;
+    const input = this.sourceProfile;
     const sourceElements = this.#snapshotIndex(input);
     const referenceElements = this.#snapshotIndex(referenced);
 
@@ -646,13 +660,20 @@ function inputFiles(inputs) {
 
 function run(inputs, options) {
   const rebasedProfiles = options.rebasedProfiles ? path.resolve(options.rebasedProfiles) : undefined;
+  const csvReports = options.csvReports ? path.resolve(options.csvReports) : undefined;
   const fhirPackage = new FhirPackage(options.ig, options.cache);
   let written = 0;
   const destinations = new Set();
   for (const filename of inputFiles(inputs)) {
     try {
       const input = readJson(filename);
-      const result = new DiffBuilder(input, fhirPackage).rebase();
+      let report = null;
+      if (csvReports) {
+        report = ProfileComparisonReport.fromFileIfExists(path.join(csvReports, `${path.parse(filename).name}.csv`));
+      }
+      const diffBuilder = new DiffBuilder(input, fhirPackage, report);
+      const result = diffBuilder.rebase();
+      
       if (result.skipped) {
         console.log(`- Skipped ${path.basename(filename)}: ${result.skipped}`);
         continue;
