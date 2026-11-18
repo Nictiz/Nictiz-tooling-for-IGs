@@ -20,14 +20,70 @@ function readJson(filename) {
 }
 
 /**
- * A profile comparison CSV report. Differences are keyed by property, with
- * source and target values, and serialized using property-specific Markdown bullets.
+ * A profile comparison CSV report. Elements contain Difference instances with
+ * a key and source/target values, serialized using property-specific Markdown bullets.
  *
  * The first two CSV records each contain one Markdown profile link. The third
  * contains Element,Differences,Notes. Each subsequent record represents one
  * element, with a multiline Markdown bullet list and a Markdown note.
  */
 class ProfileComparisonReport {
+  static Difference = class Difference {
+    static #keys = new Set(['cardinality']);
+
+    constructor(key, source, target) {
+      if (!Difference.#keys.has(key)) throw new Error(`Unsupported report difference: ${key}`);
+      if (typeof source !== 'string' || typeof target !== 'string') {
+        throw new Error('Difference source and target must be strings');
+      }
+      if (key === 'cardinality' && ![source, target].every(value => /^\d+\.\.(?:\d+|\*)$/.test(value))) {
+        throw new Error('Cardinality differences must use min..max values');
+      }
+      this.key = key;
+      this.source = source;
+      this.target = target;
+    }
+
+    toMarkdown() {
+      return `* Cardinality: ${this.source} versus ${this.target}`;
+    }
+
+    static fromMarkdown(markdown) {
+      const match = /^\* Cardinality: (\d+\.\.(?:\d+|\*)) versus (\d+\.\.(?:\d+|\*))$/.exec(markdown);
+      if (!match) throw new Error(`Unsupported report difference: ${markdown}`);
+      return new Difference('cardinality', match[1], match[2]);
+    }
+  };
+
+  static ReportElement = class ReportElement {
+    constructor(path, differences = [], note = '') {
+      if (typeof path !== 'string' || typeof note !== 'string' || !Array.isArray(differences)) {
+        throw new Error('Report elements require a string path, an array of differences, and a string note');
+      }
+      this.path = path;
+      this.differences = [];
+      this.note = note;
+      for (const difference of differences) {
+        if (!(difference instanceof ProfileComparisonReport.Difference)) {
+          throw new Error('Report element differences must be Difference instances');
+        }
+        this.addDifference(difference.key, difference.source, difference.target);
+      }
+    }
+
+    addDifference(key, source, target) {
+      const difference = new ProfileComparisonReport.Difference(key, source, target);
+      const existing = this.differences.find(item => item.key === key);
+      if (existing) {
+        if (!isDeepStrictEqual(existing, difference)) {
+          throw new Error(`${this.path}: existing ${key} difference does not match ${source} versus ${target}`);
+        }
+        return;
+      }
+      this.differences.push(difference);
+    }
+  };
+
   constructor() {
     this.filePath = null;
     this.profileName = null;
@@ -66,25 +122,21 @@ class ProfileComparisonReport {
     }
     this.elements = rows.slice(3).map((row, index) => {
       if (row.length !== 3) throw new Error(`Report record ${index + 4} must have three columns`);
-      return { path: row[0], differences: ProfileComparisonReport.#readDifferences(row[1]), note: row[2] };
+      const differences = row[1] ? row[1].split(/\r?\n/).map(line => ProfileComparisonReport.Difference.fromMarkdown(line)) : [];
+      return new ProfileComparisonReport.ReportElement(row[0], differences, row[2]);
     });
   }
 
   /** Add a property difference once; an existing entry must describe the same values. */
   addDifference(element, property, source, target) {
     let entry = this.elements.find(item => item.path === element);
-    const difference = { source, target };
-    if (entry && Object.hasOwn(entry.differences, property)) {
-      if (!isDeepStrictEqual(entry.differences[property], difference)) {
-        throw new Error(`${element}: existing ${property} difference does not match ${source} versus ${target}`);
-      }
+    if (!entry) {
+      entry = new ProfileComparisonReport.ReportElement(element);
+      entry.addDifference(property, source, target);
+      this.elements.push(entry);
       return;
     }
-    if (!entry) {
-      entry = { path: element, differences: {}, note: '' };
-      this.elements.push(entry);
-    }
-    entry.differences[property] = difference;
+    entry.addDifference(property, source, target);
   }
 
   toCsv() {
@@ -94,10 +146,7 @@ class ProfileComparisonReport {
       ['Element', 'Differences', 'Notes'],
       ...this.elements.map(({ path, differences, note }) => [
         path,
-        Object.entries(differences).map(([property, { source, target }]) => {
-          if (property !== 'cardinality') throw new Error(`Unsupported report difference: ${property}`);
-          return `* Cardinality: ${source} versus ${target}`;
-        }).join('\n'),
+        differences.map(difference => difference.toMarkdown()).join('\n'),
         note,
       ]),
     ];
@@ -116,21 +165,6 @@ class ProfileComparisonReport {
     const match = row.length === 1 && /^\[((?:\\.|[^\]\\])*)\]\(((?:\\.|[^)\\])*)\)$/.exec(row[0]);
     if (!match) throw new Error('Expected a single Markdown profile link');
     return match.slice(1).map(value => value.replace(/\\([\\\[\]()])/g, '$1'));
-  }
-
-  static #readDifferences(markdown) {
-    const differences = {};
-    if (!markdown) return differences;
-    for (const line of markdown.split(/\r?\n/)) {
-      const match = /^\* Cardinality: (\d+\.\.(?:\d+|\*)) versus (\d+\.\.(?:\d+|\*))$/.exec(line);
-      if (!match) throw new Error(`Unsupported report difference: ${line}`);
-      const difference = { source: match[1], target: match[2] };
-      if (differences.cardinality && !isDeepStrictEqual(differences.cardinality, difference)) {
-        throw new Error('Conflicting cardinality differences in CSV report');
-      }
-      differences.cardinality = difference;
-    }
-    return differences;
   }
 
   static #quote(value) {
