@@ -1,4 +1,4 @@
-!/usr/bin/env node
+#!/usr/bin/env node
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -28,33 +28,41 @@ function readJson(filename) {
  * element, with a multiline Markdown bullet list and a Markdown note.
  */
 class ProfileComparisonReport {
-  constructor(filePath = null) {
-    this.filePath = filePath;
-    if (filePath) {
-      this.initFromCsv(fs.readFileSync(filePath, 'utf8'));
-      return;
-    }
-
+  constructor() {
+    this.filePath = null;
     this.profileName = null;
     this.profileCanonical = null;
-    this.referencedProfileName = referencedProfileName;
-    this.referencedProfileCanonical = referencedProfileCanonical;
+    this.referencedProfileName = null;
+    this.referencedProfileCanonical = null;
     this.elements = [];
   }
 
   static fromFileIfExists(filePath) {
+    const report = new this(filePath);
+
     if (fs.existsSync(filePath)) {
-      return new this(filePath);
+      try {
+        report.load(fs.readFileSync(filePath, 'utf8'));
+      } catch (error) {
+        throw new Error(`Could not load csv file ${csvFile}: ${error}`);
+      }
+    } else {
+      report.filePath = filePath;
     }
-    return new this();
+    return report;
   }
 
   /** Write a UTF-8 CSV file synchronously, replacing any existing file. */
-  write(filePath = null) {
-    fs.writeFileSync(filePath ? filePath : this.filePath, this.toCsv(), 'utf8');
+  save(filePath = null) {
+    const target = filePath || this.filePath;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, this.toCsv(), 'utf8');
   }
 
-  static initFromCsv(csv) {
+  static load(filePath) {
+    this.filePath = filePath;
+    const csv = fs.readFileSync(filePath, 'utf8');
+
     const rows = this.#parseCsv(csv.replace(/^\uFEFF/, ''));
     if (rows.length < 3) throw new Error('Report requires two profile links and a header row');
     [this.profileName, this.profileCanonical] = this.#readLink(rows[0]);
@@ -245,7 +253,7 @@ class DiffBuilder {
       this.comparisonReport.profileName = this.sourceProfile.name;
       this.comparisonReport.profileCanonical = this.sourceProfile.url;
       this.comparisonReport.referencedProfileName = referenced.name;
-      this.comparisonReport.referencedProfileName = referenced.url;
+      this.comparisonReport.referencedProfileCanonical = referenced.url;
     }
 
     const result = this.#createDifferential(referenced);
@@ -673,7 +681,7 @@ function run(inputs, options) {
       }
       const diffBuilder = new DiffBuilder(input, fhirPackage, report);
       const result = diffBuilder.rebase();
-      
+
       if (result.skipped) {
         console.log(`- Skipped ${path.basename(filename)}: ${result.skipped}`);
         continue;
@@ -687,6 +695,9 @@ function run(inputs, options) {
         fs.mkdirSync(rebasedProfiles, { recursive: true });
         fs.writeFileSync(target, JSON.stringify(output, null, 2) + '\n');
         written++;
+      }
+      if (csvReports) {
+        report.save();
       }
 
       const skipped = unmatched.length
