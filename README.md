@@ -70,3 +70,17 @@ This script is used to match cardinality, value set bindings, and obligations de
 The script can either be used to check if these definitions align, or to actually copy over these definitions to the profiles. The check mode can be used as an automated QA process. There could be good reasons for definitions to not align exactly, e.g. when there is an inexact match between the model and FHIR a deliberate exception can be made. For this reasons, known exceptions can be documented in the known-issues.yaml file. For the same reason, it is discouraged to use the copy mode of the script as part of an automated process. If there are deliberate mismatches, you don't want to overwrite them; setting of changing obligations should be a conscious process.
 
 For details, run `sync-profiles --help`.
+
+## csv-to-mapping
+Generate XHTML mapping tables in the format of the eu-core guides from a CSV file.
+
+```powershell
+csv-to-mapping profiles/csv input/pagecontent
+```
+
+The first two CSV records must each contain a Markdown link, `[DisplayName](https://canonical-url)`, identifying the source and target artifacts. The third record supplies the table headers, which are preserved in order. Quoted commas, escaped quotes, multiline cells, and UTF-8 are supported. Lines beginning with `* ` or `- ` render as HTML bullet lists; other cell content is escaped text with line breaks.
+
+Every column named `Element` links its nonempty values to the source canonical URL followed by `#` and the element ID, preserving slice names and choice elements. This assumes the canonical resolves to a page exposing those anchors. Other columns render as text; general Markdown and raw HTML are not interpreted.
+
+Output names are `map-[source display name]-[target display name].xml`, preserving case. Existing output files are replaced. All inputs are validated before writing; malformed rows, unsafe artifact filenames, and duplicate output names cause a nonzero exit status. The sample CSV folder currently includes two Address reports with the same artifact pair; select one before converting the whole folder.
+
