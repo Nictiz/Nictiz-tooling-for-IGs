@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "description": "Tools for working with IGs within Nictiz",
   "bin": {
+    "csv-to-mapping": "src/csv-to-mapping-xml.js",
     "excel-to-artifacts": "src/excel-to-artifacts.js",
     "translate-menu": "src/translate-menu.js",
     "sync-profiles": "src/sync-profiles.js"
