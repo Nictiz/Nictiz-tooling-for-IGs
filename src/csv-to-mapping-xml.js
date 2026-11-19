@@ -104,14 +104,21 @@ class MappingXML {
     return result.join('');
   }
 
+  #renderCellContent(value, column) {
+    if (this.headers[column].trim() === 'Element' && value.trim()) {
+      const href = this.source.url.split('#')[0] + '#' + encodeURI(value.trim());
+      return `<a href="${escapeXml(href)}">${escapeXml(value)}</a>`;
+    } else {
+      return this.renderCell(value);
+    }
+  }
+
   toXml() {
     const { source, target, headers, rows } = this;
     const title = escapeXml(`${source.name} → ${target.name}`);
     const body = rows.map(row => {
       return '          <tr>' + row.map((value, column) => {
-        const content = headers[column].trim() === 'Element' && value.trim()
-          ? `<a href="${escapeXml(source.url.split('#')[0] + '#' + encodeURI(value.trim()))}">${escapeXml(value)}</a>`
-          : this.renderCell(value);
+        const content = this.#renderCellContent(value, column);
         return `<td>${content}</td>`;
       }).join('') + '</tr>';
     }).join('\n');
