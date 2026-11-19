@@ -802,9 +802,9 @@ function run(inputs, options) {
 
 if (require.main === module) {
   commander.program
-    .name('rebase-cardinalities')
-    .description('Create JSON differentials containing cardinality and binding changes against referenced package profiles.')
-    .argument('<profiles...>', 'JSON files or directories containing JSON profiles (nonrecursive)')
+    .name('profile-differences')
+    .description('Find differences for profiles and the profiles they claim an imposeProfile or compliesWithProfile relationship to.')
+    .argument('<profiles...>', 'JSON files or directories containing JSON profiles (nonrecursive). These must contain a snapshot.')
     .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles', value => {
       if (!/^[^#\\/]+#[^#\\/]+$/.test(value) || value.includes('..')) {
         throw new commander.InvalidArgumentError('Expected <package-id>#<version>, e.g. hl7.fhir.eu.eps#1.0.0-ballot');
@@ -812,8 +812,8 @@ if (require.main === module) {
       return value;
     })
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
-    .option('--rebasedProfiles <directory>', 'Output directory for rebased JSON profiles')
-    .option('--csvReports <directory>', 'Output directory for CSV reports (not yet implemented)')
+    .option('--rebasedProfiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
+    .option('--csvReports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added comments in the "Comment" column are retained.')
     .hook('preAction', command => {
       const options = command.opts();
       if (!options.rebasedProfiles && !options.csvReports) {
