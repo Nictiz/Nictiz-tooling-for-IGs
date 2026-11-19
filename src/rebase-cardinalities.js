@@ -33,6 +33,7 @@ class ProfileComparisonReport {
       ['cardinality', 'Cardinality'],
       ['valueSet', 'ValueSet'],
       ['bindingStrength', 'Binding strength'],
+      ['new extension', 'New extension'],
     ]);
 
     constructor(key, source, target) {
@@ -43,16 +44,23 @@ class ProfileComparisonReport {
       if (key === 'cardinality' && ![source, target].every(value => /^\d+\.\.(?:\d+|\*)$/.test(value))) {
         throw new Error('Cardinality differences must use min..max values');
       }
+      if (key === 'new extension' && (source !== '' || !target)) {
+        throw new Error('New extension differences require an empty source and a sliceName target');
+      }
       this.key = key;
       this.source = source;
       this.target = target;
     }
 
     toMarkdown() {
+      if (this.key === 'new extension') return `* New extension: ${this.target}`;
       return `* ${Difference.#labels.get(this.key)}: ${this.source} versus ${this.target}`;
     }
 
     static fromMarkdown(markdown) {
+      if (markdown.startsWith('* New extension: ')) {
+        return new Difference('new extension', '', markdown.slice('* New extension: '.length));
+      }
       const match = /^\* ([^:]+): (.*?) versus (.*)$/.exec(markdown);
       const key = match && [...Difference.#labels].find(([, label]) => label === match[1])?.[0];
       if (!key) throw new Error(`Unsupported report difference: ${markdown}`);
@@ -78,7 +86,8 @@ class ProfileComparisonReport {
 
     addDifference(key, source, target) {
       const difference = new ProfileComparisonReport.Difference(key, source, target);
-      const existing = this.differences.find(item => item.key === key);
+      const existing = this.differences.find(item => item.key === key &&
+        (key !== 'new extension' || item.target === target));
       if (existing) {
         if (!isDeepStrictEqual(existing, difference)) {
           throw new Error(`${this.path}: existing ${key} difference does not match ${source} versus ${target}`);
@@ -514,7 +523,7 @@ class DiffBuilder {
     return { baseline: elements.get(baseId) || this.#sliceBaseline(baseId, elements, elements) };
   }
 
-  #elementDifferential(element, referenceElement, { skipType = false, declareSlice = false } = {}) {
+  #elementDifferential(element, referenceElement, { skipType = false, declareSlice = false, reportDifferences = true } = {}) {
     const { id } = element;
     const diffElement = { id, path: element.path };
     for (const key of ['min', 'max']) {
@@ -523,7 +532,7 @@ class DiffBuilder {
       }
       if (element[key] !== referenceElement[key]) diffElement[key] = element[key];
     }
-    if ('min' in diffElement || 'max' in diffElement) {
+    if (reportDifferences && ('min' in diffElement || 'max' in diffElement)) {
       this.comparisonReport?.addDifference(id, 'cardinality',
         `${element.min}..${element.max}`, `${referenceElement.min}..${referenceElement.max}`);
     }
@@ -538,8 +547,10 @@ class DiffBuilder {
       }
       if (value !== undefined && !matches) {
         binding[key] = value;
-        this.comparisonReport?.addDifference(id, key === 'valueSet' ? 'valueSet' : 'bindingStrength',
-          value, referenceValue ?? '');
+        if (reportDifferences) {
+          this.comparisonReport?.addDifference(id, key === 'valueSet' ? 'valueSet' : 'bindingStrength',
+            value, referenceValue ?? '');
+        }
       }
     }
 
@@ -584,6 +595,15 @@ class DiffBuilder {
       const parent = contexts.findLast(context => root.startsWith(`${context.root}.`));
       contexts.push({ root, referenceRoot, parent, element: extensionElements.get(root) });
     }
+    const newExtensions = [];
+    for (const context of contexts) {
+      if (context.referenceRoot || newExtensions.some(root => context.root.startsWith(`${root}.`))) continue;
+      // Local components belong to the enclosing definition even when the reference does not expand them.
+      if (context.parent && !context.element.type?.some(type => type.code === 'Extension' && type.profile?.length)) continue;
+      newExtensions.push(context.root);
+      this.comparisonReport?.addDifference(context.root.slice(0, context.root.lastIndexOf('.')),
+        'new extension', '', context.element.sliceName);
+    }
     const changes = new Map();
     for (const [id, element] of extensionElements) {
       const owner = contexts.findLast(item => id === item.root || id.startsWith(`${item.root}.`));
@@ -592,7 +612,10 @@ class DiffBuilder {
         unmatched.push(id);
         continue;
       }
-      const change = this.#elementDifferential(element, baseline, { skipType: id === owner.root && !reference });
+      const change = this.#elementDifferential(element, baseline, {
+        skipType: id === owner.root && !reference,
+        reportDifferences: !newExtensions.some(root => id === root || id.startsWith(`${root}.`)),
+      });
       if (change) changes.set(id, change);
     }
     // Populate roots only after real changes have been found, working from children to parents.
