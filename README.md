@@ -78,9 +78,7 @@ Generate XHTML mapping tables in the format of the eu-core guides from a CSV fil
 csv-to-mapping profiles/csv input/pagecontent
 ```
 
-The first two CSV records must each contain a Markdown link, `[DisplayName](https://canonical-url)`, identifying the source and target artifacts. The third record supplies the table headers, which are preserved in order. Quoted commas, escaped quotes, multiline cells, and UTF-8 are supported. Lines beginning with `* ` or `- ` render as HTML bullet lists; other cell content is escaped text with line breaks.
-
-Every column named `Element` links its nonempty values to the source canonical URL followed by `#` and the element ID, preserving slice names and choice elements. This assumes the canonical resolves to a page exposing those anchors. Other columns render as text; general Markdown and raw HTML are not interpreted.
+The first two CSV records must each contain a Markdown link, `[DisplayName](https://canonical-url)`, identifying the source and target artifacts. The third record supplies the table headers, which are preserved in order. Quoted commas, escaped quotes, multiline cells, and UTF-8 are supported. Lines beginning with `* ` or `- ` render as HTML bullet lists; other cell content is escaped text with line breaks. Every column named `Element` will be rendered as links to the source artifact. Other columns render as text; general Markdown and raw HTML are not interpreted.
 
 Output names are `map-[source display name]-[target display name].xml`, preserving case. Existing output files are replaced. All inputs are validated before writing; malformed rows, unsafe artifact filenames, and duplicate output names cause a nonzero exit status. The sample CSV folder currently includes two Address reports with the same artifact pair; select one before converting the whole folder.
 
