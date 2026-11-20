@@ -24,7 +24,8 @@ function readJson(filename) {
  * a key and source/target values, serialized using property-specific Markdown bullets.
  *
  * The first two CSV records each contain one Markdown profile link. The third
- * contains Element,Differences,Notes. Each subsequent record represents one
+ * is a grouping row with profile names and Differential, followed by
+ * Element,Differences,Element,Notes. Each subsequent record represents one
  * element, with a multiline Markdown bullet list and a Markdown note.
  */
 class ProfileComparisonReport {
@@ -69,11 +70,12 @@ class ProfileComparisonReport {
   };
 
   static ReportElement = class ReportElement {
-    constructor(path, differences = [], note = '') {
-      if (typeof path !== 'string' || typeof note !== 'string' || !Array.isArray(differences)) {
+    constructor(sourcePath, differences = [], note = '', targetPath = sourcePath) {
+      if (typeof sourcePath !== 'string' || typeof targetPath !== 'string' || typeof note !== 'string' || !Array.isArray(differences)) {
         throw new Error('Report elements require a string path, an array of differences, and a string note');
       }
-      this.path = path;
+      this.sourcePath = sourcePath;
+      this.targetPath = targetPath;
       this.differences = [];
       this.note = note;
       for (const difference of differences) {
@@ -90,7 +92,7 @@ class ProfileComparisonReport {
         (key !== 'new extension' || item.target === target));
       if (existing) {
         if (!isDeepStrictEqual(existing, difference)) {
-          throw new Error(`${this.path}: existing ${key} difference does not match ${source} versus ${target}`);
+          throw new Error(`${this.sourcePath}: existing ${key} difference does not match ${source} versus ${target}`);
         }
         return;
       }
@@ -128,39 +130,45 @@ class ProfileComparisonReport {
     const csv = fs.readFileSync(filePath, 'utf8');
 
     const rows = ProfileComparisonReport.#parseCsv(csv.replace(/^\uFEFF/, ''));
-    if (rows.length < 3) throw new Error('Report requires two profile links and a header row');
+    if (rows.length < 4) throw new Error('Report requires two profile links, a grouping row, and a header row');
     [this.profileName, this.profileCanonical] = ProfileComparisonReport.#readLink(rows[0]);
     [this.referencedProfileName, this.referencedProfileCanonical] = ProfileComparisonReport.#readLink(rows[1]);
-    if (rows[2].join(',') !== 'Element,Differences,Notes' || rows[2].length !== 3) {
-      throw new Error('Expected report header: Element,Differences,Notes');
+    if (!isDeepStrictEqual(rows[2], [this.profileName, 'Differential', this.referencedProfileName, ''])) {
+      throw new Error('Expected report grouping header: source profile,Differential,output profile');
     }
-    this.elements = rows.slice(3).map((row, index) => {
-      if (row.length !== 3) throw new Error(`Report record ${index + 4} must have three columns`);
+    if (!isDeepStrictEqual(rows[3], ['Element', 'Differences', 'Element', 'Notes'])) {
+      throw new Error('Expected report header: Element,Differences,Element,Notes');
+    }
+    this.elements = rows.slice(4).map((row, index) => {
+      if (row.length !== 4) throw new Error(`Report record ${index + 5} must have four columns`);
       const differences = row[1] ? row[1].split(/\r?\n/).map(line => ProfileComparisonReport.Difference.fromMarkdown(line)) : [];
-      return new ProfileComparisonReport.ReportElement(row[0], differences, row[2]);
+      return new ProfileComparisonReport.ReportElement(row[0], differences, row[3], row[2]);
     });
   }
 
   /** Add a property difference once; an existing entry must describe the same values. */
-  addDifference(element, property, source, target) {
-    let entry = this.elements.find(item => item.path === element);
+  addDifference(element, property, source, target, targetPath = element) {
+    let entry = this.elements.find(item => item.sourcePath === element);
     if (!entry) {
-      entry = new ProfileComparisonReport.ReportElement(element);
+      entry = new ProfileComparisonReport.ReportElement(element, [], '', targetPath);
       entry.addDifference(property, source, target);
       this.elements.push(entry);
       return;
     }
     entry.addDifference(property, source, target);
+    entry.targetPath = targetPath;
   }
 
   toCsv() {
     const rows = [
       [ProfileComparisonReport.#link(this.profileName, this.profileCanonical)],
       [ProfileComparisonReport.#link(this.referencedProfileName, this.referencedProfileCanonical)],
-      ['Element', 'Differences', 'Notes'],
-      ...this.elements.map(({ path, differences, note }) => [
-        path,
+      [this.profileName, 'Differential', this.referencedProfileName, ''],
+      ['Element', 'Differences', 'Element', 'Notes'],
+      ...this.elements.map(({ sourcePath, differences, targetPath, note }) => [
+        sourcePath,
         differences.map(difference => difference.toMarkdown()).join('\n'),
+        targetPath,
         note,
       ]),
     ];
@@ -534,7 +542,7 @@ class DiffBuilder {
     }
     if (reportDifferences && ('min' in diffElement || 'max' in diffElement)) {
       this.comparisonReport?.addDifference(id, 'cardinality',
-        `${element.min}..${element.max}`, `${referenceElement.min}..${referenceElement.max}`);
+        `${element.min}..${element.max}`, `${referenceElement.min}..${referenceElement.max}`, referenceElement.id || referenceElement.path);
     }
 
     const binding = {};
@@ -549,7 +557,7 @@ class DiffBuilder {
         binding[key] = value;
         if (reportDifferences) {
           this.comparisonReport?.addDifference(id, key === 'valueSet' ? 'valueSet' : 'bindingStrength',
-            value, referenceValue ?? '');
+            value, referenceValue ?? '', referenceElement.id || referenceElement.path);
         }
       }
     }
