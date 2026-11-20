@@ -803,14 +803,7 @@ function run(inputs, options) {
       let report = null;
       if (csvReports) {
         for (const language of languages) {
-          const target = path.join(csvReports, `${path.parse(filename).name}-${language}.csv`);
-          const existing = ProfileComparisonReport.fromFileIfExists(target, language);
-          const legacy = path.join(csvReports, `${path.parse(filename).name}.csv`);
-          if (language === 'en' && !fs.existsSync(target) && fs.existsSync(legacy)) {
-            existing.load(legacy);
-            existing.filePath = target;
-          }
-          reports.push(existing);
+          reports.push(new ProfileComparisonReport(language));
         }
         report = reports[0];
       }
@@ -833,7 +826,17 @@ function run(inputs, options) {
       }
       if (csvReports) {
         for (const localized of reports) {
-          if (localized !== report) new DiffBuilder(input, fhirPackage, localized).rebase();
+          const name = `map-${report.profileName}-${report.referencedProfileName}-${localized.language}.csv`;
+          if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) throw new Error(`Invalid report filename: ${name}`);
+          const target = path.join(csvReports, name);
+          if (destinations.has(target)) throw new Error(`Duplicate output filename: ${target}`);
+          destinations.add(target);
+          const previous = [target, path.join(csvReports, `${path.parse(filename).name}-${localized.language}.csv`)];
+          if (localized.language === 'en') previous.push(path.join(csvReports, `${path.parse(filename).name}.csv`));
+          const existing = previous.find(file => fs.existsSync(file));
+          if (existing) localized.load(existing);
+          localized.filePath = target;
+          if (existing || localized !== report) new DiffBuilder(input, fhirPackage, localized).rebase();
           localized.save();
         }
       }
