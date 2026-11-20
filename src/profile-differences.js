@@ -5,6 +5,24 @@ const path = require('node:path');
 const { homedir } = require('node:os');
 const { isDeepStrictEqual } = require('node:util');
 const commander= require('commander');
+const { parsePo, translationFor } = require('./po');
+
+const catalogs = new Map([['en', new Map()]]);
+function catalog(language) {
+  if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]+)*$/.test(language)) throw new Error(`Invalid language code: ${language}`);
+  if (!catalogs.has(language)) {
+    const filename = path.join(__dirname, 'translations', `${language}.po`);
+    if (!fs.existsSync(filename)) throw new Error(`Unsupported report language: ${language}`);
+    catalogs.set(language, new Map(parsePo(fs.readFileSync(filename, 'utf8'))
+      .filter(entry => entry.msgid && !entry.msgctxt && !entry.comments.some(comment => /^#,.*\bfuzzy\b/.test(comment)))
+      .map(entry => [entry.msgid, translationFor(entry) || entry.msgid])));
+  }
+  return catalogs.get(language);
+}
+function translator(language) {
+  const entries = catalog(language);
+  return value => entries.get(value) ?? value;
+}
 
 const PROFILE_EXTENSIONS = new Set([
   'http://hl7.org/fhir/StructureDefinition/structuredefinition-imposeProfile',
@@ -53,17 +71,23 @@ class ProfileComparisonReport {
       this.target = target;
     }
 
-    toMarkdown() {
-      if (this.key === 'new extension') return `* New extension: ${this.target}`;
-      return `* ${Difference.#labels.get(this.key)}: ${this.source} versus ${this.target}`;
+    toMarkdown(language = 'en') {
+      const t = translator(language);
+      if (this.key === 'new extension') return `* ${t('New extension')}: ${this.target}`;
+      return `* ${t(Difference.#labels.get(this.key))}: ${this.source} ${t('versus')} ${this.target}`;
     }
 
-    static fromMarkdown(markdown) {
-      if (markdown.startsWith('* New extension: ')) {
-        return new Difference('new extension', '', markdown.slice('* New extension: '.length));
+    static fromMarkdown(markdown, language = 'en') {
+      const t = translator(language);
+      const prefix = `* ${t('New extension')}: `;
+      if (markdown.startsWith(prefix)) {
+        return new Difference('new extension', '', markdown.slice(prefix.length));
       }
-      const match = /^\* ([^:]+): (.*?) versus (.*)$/.exec(markdown);
-      const key = match && [...Difference.#labels].find(([, label]) => label === match[1])?.[0];
+      const parts = /^\* ([^:]+): (.*)$/.exec(markdown);
+      const separator = ` ${t('versus')} `;
+      const position = parts ? parts[2].indexOf(separator) : -1;
+      const match = position < 0 ? null : [markdown, parts[1], parts[2].slice(0, position), parts[2].slice(position + separator.length)];
+      const key = match && [...Difference.#labels].find(([, label]) => t(label) === match[1])?.[0];
       if (!key) throw new Error(`Unsupported report difference: ${markdown}`);
       return new Difference(key, match[2], match[3]);
     }
@@ -100,7 +124,9 @@ class ProfileComparisonReport {
     }
   };
 
-  constructor() {
+  constructor(language = 'en') {
+    catalog(language);
+    this.language = language;
     this.filePath = null;
     this.profileName = null;
     this.profileCanonical = null;
@@ -109,8 +135,8 @@ class ProfileComparisonReport {
     this.elements = [];
   }
 
-  static fromFileIfExists(filePath) {
-    const report = new this();
+  static fromFileIfExists(filePath, language = 'en') {
+    const report = new this(language);
     report.filePath = filePath;
     if (fs.existsSync(filePath)) {
       report.load(filePath);
@@ -133,15 +159,15 @@ class ProfileComparisonReport {
     if (rows.length < 4) throw new Error('Report requires two profile links, a grouping row, and a header row');
     [this.profileName, this.profileCanonical] = ProfileComparisonReport.#readLink(rows[0]);
     [this.referencedProfileName, this.referencedProfileCanonical] = ProfileComparisonReport.#readLink(rows[1]);
-    if (!isDeepStrictEqual(rows[2], [this.profileName, 'Differential', this.referencedProfileName, ''])) {
+    if (!isDeepStrictEqual(rows[2], [this.profileName, translator(this.language)('Differential'), this.referencedProfileName, ''])) {
       throw new Error('Expected report grouping header: source profile,Differential,output profile');
     }
-    if (!isDeepStrictEqual(rows[3], ['Element', 'Differences', 'Element', 'Notes'])) {
+    if (!isDeepStrictEqual(rows[3], ['Element', 'Differences', 'Element', 'Notes'].map(translator(this.language)))) {
       throw new Error('Expected report header: Element,Differences,Element,Notes');
     }
     this.elements = rows.slice(4).map((row, index) => {
       if (row.length !== 4) throw new Error(`Report record ${index + 5} must have four columns`);
-      const differences = row[1] ? row[1].split(/\r?\n/).map(line => ProfileComparisonReport.Difference.fromMarkdown(line)) : [];
+      const differences = row[1] ? row[1].split(/\r?\n/).map(line => ProfileComparisonReport.Difference.fromMarkdown(line, this.language)) : [];
       return new ProfileComparisonReport.ReportElement(row[0], differences, row[3], row[2]);
     });
   }
@@ -163,11 +189,11 @@ class ProfileComparisonReport {
     const rows = [
       [ProfileComparisonReport.#link(this.profileName, this.profileCanonical)],
       [ProfileComparisonReport.#link(this.referencedProfileName, this.referencedProfileCanonical)],
-      [this.profileName, 'Differential', this.referencedProfileName, ''],
-      ['Element', 'Differences', 'Element', 'Notes'],
+      [this.profileName, translator(this.language)('Differential'), this.referencedProfileName, ''],
+      ['Element', 'Differences', 'Element', 'Notes'].map(translator(this.language)),
       ...this.elements.map(({ sourcePath, differences, targetPath, note }) => [
         sourcePath,
-        differences.map(difference => difference.toMarkdown()).join('\n'),
+        differences.map(difference => difference.toMarkdown(this.language)).join('\n'),
         targetPath,
         note,
       ]),
@@ -765,15 +791,28 @@ function inputFiles(inputs) {
 function run(inputs, options) {
   const rebasedProfiles = options.rebasedProfiles ? path.resolve(options.rebasedProfiles) : undefined;
   const csvReports = options.csvReports ? path.resolve(options.csvReports) : undefined;
+  const languages = [...new Set(options.languages || ['en'])];
+  languages.forEach(catalog);
   const fhirPackage = new FhirPackage(options.ig, options.cache);
   let written = 0;
   const destinations = new Set();
   for (const filename of inputFiles(inputs)) {
     try {
       const input = readJson(filename);
+      const reports = [];
       let report = null;
       if (csvReports) {
-        report = ProfileComparisonReport.fromFileIfExists(path.join(csvReports, `${path.parse(filename).name}.csv`));
+        for (const language of languages) {
+          const target = path.join(csvReports, `${path.parse(filename).name}-${language}.csv`);
+          const existing = ProfileComparisonReport.fromFileIfExists(target, language);
+          const legacy = path.join(csvReports, `${path.parse(filename).name}.csv`);
+          if (language === 'en' && !fs.existsSync(target) && fs.existsSync(legacy)) {
+            existing.load(legacy);
+            existing.filePath = target;
+          }
+          reports.push(existing);
+        }
+        report = reports[0];
       }
       const diffBuilder = new DiffBuilder(input, fhirPackage, report);
       const result = diffBuilder.rebase();
@@ -793,7 +832,10 @@ function run(inputs, options) {
         written++;
       }
       if (csvReports) {
-        report.save();
+        for (const localized of reports) {
+          if (localized !== report) new DiffBuilder(input, fhirPackage, localized).rebase();
+          localized.save();
+        }
       }
 
       const skipped = unmatched.length
@@ -819,9 +861,10 @@ if (require.main === module) {
       }
       return value;
     })
+    .option('--languages <languages...>', 'Report languages (built in: en, nl)', ['en'])
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
     .option('--rebasedProfiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
-    .option('--csvReports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added comments in the "Comment" column are retained.')
+    .option('--csvReports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
     .hook('preAction', command => {
       const options = command.opts();
       if (!options.rebasedProfiles && !options.csvReports) {
