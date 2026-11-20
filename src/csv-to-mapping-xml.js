@@ -70,14 +70,26 @@ class MappingArtifact {
 }
 
 class MappingXML {
-  constructor(source, target, headers, rows) {
+  constructor(source, target, groupHeaders, headers, rows) {
     if (!headers?.length || headers.some(header => !header.trim())) throw new Error('Missing column headers');
+    if (!groupHeaders?.[0]?.trim() || groupHeaders.length > headers.length) {
+      throw new Error('Group headers must start in the first column and fit within the column headers');
+    }
     rows.forEach((row, index) => {
       if (row.length !== headers.length) throw new Error(`Data record ${index + 1}: expected ${headers.length} columns, got ${row.length}`);
     });
     this.source = source;
     this.target = target;
     this.headers = headers;
+    this.groups = [];
+    for (let column = 0; column < headers.length; column++) {
+      const name = groupHeaders[column]?.trim();
+      if (name) {
+        this.groups.push({ name, colspan: 1 });
+      } else {
+        this.groups[this.groups.length - 1].colspan++;
+      }
+    }
     this.rows = rows;
   }
 
@@ -87,7 +99,8 @@ class MappingXML {
       new MappingArtifact(records[0], 'Source', canonicalBase),
       new MappingArtifact(records[1], 'Target', canonicalBase),
       records[2],
-      records.slice(3).filter(row => row.some(value => value.trim()))
+      records[3],
+      records.slice(4).filter(row => row.some(value => value.trim()))
     );
   }
 
@@ -125,6 +138,17 @@ class MappingXML {
     }
   }
 
+  #renderGroupHeaders() {
+    return this.groups.map(group => {
+      const artifact = [this.source, this.target].find(item => item.name === group.name);
+      let content = escapeXml(group.name);
+      if (artifact) {
+        content = `<a href="${escapeXml(artifact.href)}">${content}</a>`;
+      }
+      return `<th colspan="${group.colspan}">${content}</th>`;
+    }).join('');
+  }
+
   toXml() {
     const { source, target, headers, rows } = this;
     const title = escapeXml(`${source.name} → ${target.name}`);
@@ -149,7 +173,10 @@ class MappingXML {
     <div class="table-wrap">
       <table summary="${title}">
         <caption>${title}</caption>
-        <thead><tr>${headers.map(header => `<th>${escapeXml(header)}</th>`).join('')}</tr></thead>
+        <thead>
+          <tr>${this.#renderGroupHeaders()}</tr>
+          <tr>${headers.map(header => `<th>${escapeXml(header)}</th>`).join('')}</tr>
+        </thead>
         <tbody>
 ${body}
         </tbody>
