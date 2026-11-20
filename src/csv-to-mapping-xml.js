@@ -138,6 +138,12 @@ class MappingXML {
     }
   }
 
+  #headerClass(group, subheader = false) {
+    if (group.name === this.source.name) return subheader ? 'src-sub' : 'src-head';
+    if (group.name === this.target.name) return subheader ? 'tgt-sub' : 'tgt-head';
+    return subheader ? 'relsub' : 'relhead';
+  }
+
   #renderGroupHeaders() {
     return this.groups.map(group => {
       const artifact = [this.source, this.target].find(item => item.name === group.name);
@@ -145,12 +151,13 @@ class MappingXML {
       if (artifact) {
         content = `<a href="${escapeXml(artifact.href)}">${content}</a>`;
       }
-      return `<th colspan="${group.colspan}">${content}</th>`;
+      return `<th colspan="${group.colspan}" class="${this.#headerClass(group)}">${content}</th>`;
     }).join('');
   }
 
   toXml() {
     const { source, target, headers, rows } = this;
+    const columnClasses = this.groups.flatMap(group => Array(group.colspan).fill(this.#headerClass(group, true)));
     const title = escapeXml(`${source.name} → ${target.name}`);
     const body = rows.map(row => {
       return '          <tr>' + row.map((value, column) => `<td>${this.#renderCellContent(value, column)}</td>`).join('') + '</tr>';
@@ -175,7 +182,7 @@ class MappingXML {
         <caption>${title}</caption>
         <thead>
           <tr>${this.#renderGroupHeaders()}</tr>
-          <tr>${headers.map(header => `<th>${escapeXml(header)}</th>`).join('')}</tr>
+          <tr>${headers.map((header, column) => `<th class="${columnClasses[column]}">${escapeXml(header)}</th>`).join('')}</tr>
         </thead>
         <tbody>
 ${body}
