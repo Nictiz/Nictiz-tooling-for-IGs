@@ -189,21 +189,19 @@ ${body}
 }
 
 class MappingGenerator {
-  constructor(inputFolder, outputFolder) {
-    this.inputFolder = inputFolder;
+  constructor(files, outputFolder) {
+    this.files = files;
     this.outputFolder = outputFolder;
   }
 
   generate() {
-    const { inputFolder, outputFolder } = this;
+    const { files, outputFolder } = this;
     const { canonicalBase } = parseSushiYaml();
-    const files = fs.readdirSync(inputFolder, { withFileTypes: true })
-      .filter(entry => entry.isFile() && /\.csv$/i.test(entry.name)).map(entry => entry.name).sort();
     // Validate all files and output names before writing anything.
     const outputs = new Map();
     for (const file of files) {
       try {
-        const mapping = MappingXML.fromCsv(fs.readFileSync(path.join(inputFolder, file), 'utf8'), canonicalBase);
+        const mapping = MappingXML.fromCsv(fs.readFileSync(file, 'utf8'), canonicalBase);
         const key = mapping.filename.toLowerCase();
         if (outputs.has(key)) throw new Error(`Duplicate output ${mapping.filename} (also produced by ${outputs.get(key).file})`);
         outputs.set(key, { filename: mapping.filename, xml: mapping.toXml(), file });
@@ -217,10 +215,10 @@ class MappingGenerator {
 
 if (require.main === module) {
   new Command().name('csv-to-mapping-xml').description('Create XHTML mapping tables from CSV files.')
-    .argument('<inputFolder>', 'Folder containing CSV files (nonrecursive)')
-    .argument('<outputFolder>', 'Destination for mapping XML files')
-    .action((inputFolder, outputFolder) => {
-      try { console.log(`Created ${new MappingGenerator(inputFolder, outputFolder).generate()} mapping file(s).`); }
+    .argument('<csvFiles...>', 'CSV files to convert')
+    .requiredOption('--outputFolder <directory>', 'Destination for mapping XML files')
+    .action((csvFiles, options) => {
+      try { console.log(`Created ${new MappingGenerator(csvFiles, options.outputFolder).generate()} mapping file(s).`); }
       catch (error) { console.error(error.message); process.exitCode = 1; }
     }).parse();
 }
