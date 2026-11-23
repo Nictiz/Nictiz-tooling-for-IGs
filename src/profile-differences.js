@@ -254,8 +254,14 @@ class ProfileComparisonReport {
 }
 
 class FhirPackage {
+  #additionalPackages;
+
+  /** Accept one package ID or an ordered list of package IDs. */
   constructor(ig, cache = path.join(homedir(), '.fhir', 'packages')) {
-    this.ig = ig;
+    const packages = Array.isArray(ig) ? ig : [ig];
+    if (!packages.length) throw new Error('At least one FHIR package is required');
+    this.ig = packages[0];
+    this.#additionalPackages = packages.slice(1).map(id => new FhirPackage(id, cache));
     this.cache = cache;
     this.profiles = undefined;
   }
@@ -296,9 +302,9 @@ class FhirPackage {
     return matches;
   }
 
-  /** Resolve a canonical artifact from this package, then cached dependencies in breadth-first order. */
+  /** Search supplied packages in order, then their cached dependencies breadth-first. */
   resolve(canonical) {
-    const pending = [this];
+    const pending = [this, ...this.#additionalPackages];
     const visited = new Set();
     const missing = [];
     for (let i = 0; i < pending.length; i++) {
@@ -321,7 +327,8 @@ class FhirPackage {
         pending.push(new FhirPackage(`${id}#${version}`, this.cache));
       }
     }
-    throw new Error(`Artifact ${canonical} not found in ${this.ig} or its cached dependencies` +
+    const packages = [this, ...this.#additionalPackages].map(pkg => pkg.ig).join(', ');
+    throw new Error(`Artifact ${canonical} not found in ${packages} or its cached dependencies` +
       (missing.length ? `; missing packages: ${missing.join(', ')}` : ''));
   }
 }
@@ -774,6 +781,7 @@ class DiffBuilder {
 }
 
 function run(inputs, options) {
+  inputs = [...new Set(inputs)];
   const rebasedProfiles = options.rebasedProfiles ? path.resolve(options.rebasedProfiles) : undefined;
   const csvReports = options.csvReports ? path.resolve(options.csvReports) : undefined;
   const languages = [...new Set(options.languages || ['en'])];
@@ -781,7 +789,9 @@ function run(inputs, options) {
   const fhirPackage = new FhirPackage(options.ig, options.cache);
   let written = 0;
   const destinations = new Set();
-  const snapshotCache = new ProfileSnapshotCache(options.snapshotCache || '.profile-snapshots');
+  const snapshotCache = new ProfileSnapshotCache(options.snapshotCache, {
+    validatorJar: options.validatorJar, packages: options.ig,
+  });
   const profiles = snapshotCache.load(inputs);
   console.log(`Snapshot cache: ${snapshotCache.pendingRefresh.length} profile(s) require refresh.`);
   for (const [filename, cached] of profiles) {
@@ -857,12 +867,13 @@ if (require.main === module) {
       if (!stat.isFile()) throw new commander.InvalidArgumentError(`Expected an input profile file: ${input}`);
       return [...files, filename];
     })
-    .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles', value => {
+    .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles (repeatable)', (value, previous = []) => {
       if (!/^[^#\\/]+#[^#\\/]+$/.test(value) || value.includes('..')) {
         throw new commander.InvalidArgumentError('Expected <package-id>#<version>, e.g. hl7.fhir.eu.eps#1.0.0-ballot');
       }
-      return value;
+      return [...previous, value];
     })
+    .option('--validatorJar <path>', 'Validator JAR (default: ../validator_cli.jar relative to the working directory)')
     .option('--languages <languages...>', 'Report languages (built in: en, nl)', ['en'])
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
     .option('--snapshot-cache <directory>', 'Input profile snapshot cache with a SHA-256 index', '.profile-snapshots')
