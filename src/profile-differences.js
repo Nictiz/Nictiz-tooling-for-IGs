@@ -6,6 +6,7 @@ const { homedir } = require('node:os');
 const { isDeepStrictEqual } = require('node:util');
 const commander= require('commander');
 const { parsePo, translationFor } = require('./po');
+const { ProfileSnapshotCache } = require('./profile-snapshot-cache');
 
 const catalogs = new Map([['en', new Map()]]);
 function catalog(language) {
@@ -772,22 +773,6 @@ class DiffBuilder {
   }
 }
 
-function inputFiles(inputs) {
-  const files = new Set();
-  for (const input of inputs) {
-    const absolute = path.resolve(input);
-    const stat = fs.statSync(absolute);
-    if (stat.isDirectory()) {
-      for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
-        if (entry.isFile() && entry.name.endsWith('.json')) files.add(path.join(absolute, entry.name));
-      }
-    } else {
-      files.add(absolute);
-    }
-  }
-  return [...files].sort();
-}
-
 function run(inputs, options) {
   const rebasedProfiles = options.rebasedProfiles ? path.resolve(options.rebasedProfiles) : undefined;
   const csvReports = options.csvReports ? path.resolve(options.csvReports) : undefined;
@@ -796,9 +781,13 @@ function run(inputs, options) {
   const fhirPackage = new FhirPackage(options.ig, options.cache);
   let written = 0;
   const destinations = new Set();
-  for (const filename of inputFiles(inputs)) {
+  const snapshotCache = new ProfileSnapshotCache(options.snapshotCache || '.profile-snapshots');
+  const profiles = snapshotCache.load(inputs);
+  console.log(`Snapshot cache: ${snapshotCache.pendingRefresh.length} profile(s) require refresh.`);
+  for (const [filename, cached] of profiles) {
     try {
-      const input = readJson(filename);
+      if (cached.error) throw cached.error;
+      const input = cached.profile;
       const reports = [];
       let report = null;
       if (csvReports) {
@@ -857,7 +846,17 @@ if (require.main === module) {
   commander.program
     .name('profile-differences')
     .description('Find differences for profiles and the profiles they claim an imposeProfile or compliesWithProfile relationship to.')
-    .argument('<profiles...>', 'JSON files or directories containing JSON profiles (nonrecursive). These must contain a snapshot.')
+    .argument('<profiles...>', 'Input profile files (any extension). Snapshots are loaded from the snapshot cache.', (input, files = []) => {
+      const filename = path.resolve(input);
+      let stat;
+      try {
+        stat = fs.statSync(filename);
+      } catch (error) {
+        throw new commander.InvalidArgumentError(`Cannot access input profile file ${input}: ${error.message}`);
+      }
+      if (!stat.isFile()) throw new commander.InvalidArgumentError(`Expected an input profile file: ${input}`);
+      return [...files, filename];
+    })
     .requiredOption('--ig <package-id#version>', 'Installed FHIR package containing the referenced profiles', value => {
       if (!/^[^#\\/]+#[^#\\/]+$/.test(value) || value.includes('..')) {
         throw new commander.InvalidArgumentError('Expected <package-id>#<version>, e.g. hl7.fhir.eu.eps#1.0.0-ballot');
@@ -866,6 +865,7 @@ if (require.main === module) {
     })
     .option('--languages <languages...>', 'Report languages (built in: en, nl)', ['en'])
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
+    .option('--snapshot-cache <directory>', 'Input profile snapshot cache with a SHA-256 index', '.profile-snapshots')
     .option('--rebasedProfiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
     .option('--csvReports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
     .hook('preAction', command => {
