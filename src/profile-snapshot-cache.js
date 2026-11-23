@@ -10,14 +10,22 @@ class ValidatorSnapshotGenerator {
   #validatorJar;
 
   constructor(validatorJar, execute = execFileSync) {
-    const jar = path.resolve(validatorJar || path.join(process.cwd(), '..', 'validator_cli.jar'));
-    if (!fs.existsSync(jar) || !fs.statSync(jar).isFile()) {
-      throw new Error(`Validator JAR not found: ${jar}. Supply --validatorJar <path>.`);
+    if (validatorJar) {
+      if (!fs.existsSync(validatorJar) || !fs.statSync(validatorJar).isFile()) {
+        throw new Error(`Validator JAR not found at ${validatorJar}.`);
+      }
+      this.#validatorJar = validatorJar;
+    } else {
+      const defaultJar = path.resolve(path.join(process.cwd(), '..', 'validator_cli.jar'))
+      if (!fs.existsSync(defaultJar) || !fs.statSync(defaultJar).isFile()) {
+        throw new Error(`Validator JAR not found. Download it from https://github.com/hapifhir/org.hl7.fhir.core/releases, then place it in the parent of this folder or supply the location with the --validatorJar <path> flag.`);
+      }
+      this.#validatorJar = defaultJar;
     }
+
     try { execute('java', ['-version'], { stdio: 'pipe' }); } catch (error) {
       throw new Error(`Java is unavailable. Install Java and ensure it is on PATH. ${error.message}`);
     }
-    this.#validatorJar = jar;
   }
 
   /**
@@ -104,20 +112,16 @@ class ProfileSnapshotCache {
 
     this.pendingRefresh = entries.filter(entry => entry.refresh).map(entry => entry.filename);
     let generated;
-    let generationError;
     if (this.pendingRefresh.length) {
-      try {
-        const generator = new ValidatorSnapshotGenerator(this.validatorJar, this.execute);
-        generated = generator.generateSnapshots(
-          entries.filter(entry => entry.refresh).map(entry => entry.path),
-          entries.map(entry => entry.path), this.packages, this.execute);
-      } catch (error) { generationError = error; }
+      const generator = new ValidatorSnapshotGenerator(this.validatorJar, this.execute);
+      generated = generator.generateSnapshots(
+        entries.filter(entry => entry.refresh).map(entry => entry.path),
+        entries.map(entry => entry.path), this.packages, this.execute);
     }
     const results = new Map();
     for (const entry of entries) {
       try {
         if (entry.refresh) {
-          if (generationError) throw generationError;
           entry.profile = generated.get(entry.path);
           if (!Array.isArray(entry.profile?.snapshot?.element) || !entry.profile.snapshot.element.length) {
             throw new Error('Snapshot generator must return a profile with snapshot.element');
