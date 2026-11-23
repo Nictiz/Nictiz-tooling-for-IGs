@@ -1,0 +1,26 @@
+msgid "Differential"
+msgstr "Differential"
+
+msgid "Element"
+msgstr "Element"
+
+msgid "Differences"
+msgstr "Verschillen"
+
+msgid "Notes"
+msgstr "Opmerkingen"
+
+msgid "Cardinality"
+msgstr "Kardinaliteit"
+
+msgid "ValueSet"
+msgstr "Waardelijst"
+
+msgid "Binding strength"
+msgstr "Bindingssterkte"
+
+msgid "New extension"
+msgstr "Nieuwe extensie"
+
+msgid "versus"
+msgstr "versus"

@@ -7,7 +7,8 @@
     "excel-to-artifacts": "src/excel-to-artifacts.js",
     "translate-menu": "src/translate-menu.js",
     "sync-profiles": "src/sync-profiles.js",
-    "get-from-ad": "src/get-from-ad.js"
+    "get-from-ad": "src/get-from-ad.js",
+    "profile-differences": "src/profile-differences.js"
   },
   "engines": {
     "node": ">=18"
