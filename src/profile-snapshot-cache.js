@@ -5,6 +5,8 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 
 const hash = contents => createHash('sha256').update(contents).digest('hex');
+const hasSnapshot = profile => profile?.resourceType === 'StructureDefinition' &&
+  Array.isArray(profile.snapshot?.element) && profile.snapshot.element.length > 0;
 
 class ValidatorSnapshotGenerator {
   #validatorJar;
@@ -98,6 +100,10 @@ class ProfileSnapshotCache {
       filePath = path.resolve(filePath);
       const contents = fs.readFileSync(filePath);
       const digest = hash(contents);
+      let inputProfile;
+      try { inputProfile = JSON.parse(contents.toString('utf8').replace(/^\uFEFF/, '')); } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
       
       const filename = path.basename(filePath);
       const cacheFilePath = path.join(this.directory, filename.endsWith('.json') ? filename : `${filename}.json`);
@@ -105,28 +111,29 @@ class ProfileSnapshotCache {
       try { profile =  JSON.parse(fs.readFileSync(cacheFilePath, 'utf8')); } catch (error) {
         if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
       }
-      return { path: filePath, filename, digest, cacheFilePath, profile,
-        refresh: index.profiles[filename]?.hash !== digest ||
-          !Array.isArray(profile?.snapshot?.element) || !profile.snapshot.element.length };
+      return { path: filePath, filename, digest, cacheFilePath, profile, contents, inputProfile,
+        refresh: index.profiles[filename]?.hash !== digest || !hasSnapshot(profile) };
     });
 
     this.pendingRefresh = entries.filter(entry => entry.refresh).map(entry => entry.filename);
     let generated;
-    if (this.pendingRefresh.length) {
+    const toGenerate = entries.filter(entry => entry.refresh && !hasSnapshot(entry.inputProfile));
+    if (toGenerate.length) {
       const generator = new ValidatorSnapshotGenerator(this.validatorJar, this.execute);
       generated = generator.generateSnapshots(
-        entries.filter(entry => entry.refresh).map(entry => entry.path),
+        toGenerate.map(entry => entry.path),
         entries.map(entry => entry.path), this.packages, this.execute);
     }
     const results = new Map();
     for (const entry of entries) {
       try {
         if (entry.refresh) {
-          entry.profile = generated.get(entry.path);
-          if (!Array.isArray(entry.profile?.snapshot?.element) || !entry.profile.snapshot.element.length) {
+          const useInput = hasSnapshot(entry.inputProfile);
+          entry.profile = useInput ? entry.inputProfile : generated.get(entry.path);
+          if (!hasSnapshot(entry.profile)) {
             throw new Error('Snapshot generator must return a profile with snapshot.element');
           }
-          fs.writeFileSync(entry.cacheFilePath, JSON.stringify(entry.profile, null, 2) + '\n');
+          fs.writeFileSync(entry.cacheFilePath, useInput ? entry.contents : JSON.stringify(entry.profile, null, 2) + '\n');
           index.profiles[entry.filename] = { hash: entry.digest };
           fs.writeFileSync(indexPath, JSON.stringify(index, null, 2) + '\n');
         }
@@ -139,4 +146,4 @@ class ProfileSnapshotCache {
   }
 }
 
-module.exports = { ProfileSnapshotCache, ValidatorSnapshotGenerator };
+module.exports = { ProfileSnapshotCache, ValidatorSnapshotGenerator, hasSnapshot };

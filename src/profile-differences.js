@@ -6,7 +6,7 @@ const { homedir } = require('node:os');
 const { isDeepStrictEqual } = require('node:util');
 const commander= require('commander');
 const { parsePo, translationFor } = require('./po');
-const { ProfileSnapshotCache } = require('./profile-snapshot-cache');
+const { ProfileSnapshotCache, hasSnapshot } = require('./profile-snapshot-cache');
 
 const catalogs = new Map([['en', new Map()]]);
 function catalog(language) {
@@ -789,11 +789,24 @@ function run(inputs, options) {
   const fhirPackage = new FhirPackage(options.ig, options.cache);
   let written = 0;
   const destinations = new Set();
-  const snapshotCache = new ProfileSnapshotCache(options.snapshotCache, {
-    validatorJar: options.validatorJar, packages: options.ig,
-  });
-  const profiles = snapshotCache.load(inputs);
-  console.log(`Snapshot cache: ${snapshotCache.pendingRefresh.length} profile(s) require refresh.`);
+  let profiles;
+  if (options.profileCache) {
+    const snapshotCache = new ProfileSnapshotCache(options.profileCache, {
+      validatorJar: options.validatorJar, packages: options.ig,
+    });
+    profiles = snapshotCache.load(inputs);
+    console.log(`Snapshot cache: ${snapshotCache.pendingRefresh.length} profile(s) require refresh.`);
+  } else {
+    profiles = new Map(inputs.map(filename => {
+      try {
+        const profile = readJson(filename);
+        if (!hasSnapshot(profile)) throw new Error('Missing snapshot');
+        return [filename, { profile }];
+      } catch (error) {
+        return [filename, { error: new Error(`Input must be a JSON StructureDefinition with a snapshot when --profile-cache is absent: ${error.message}`) }];
+      }
+    }));
+  }
   for (const [filename, cached] of profiles) {
     try {
       if (cached.error) throw cached.error;
@@ -856,7 +869,7 @@ if (require.main === module) {
   commander.program
     .name('profile-differences')
     .description('Find differences for profiles and the profiles they claim an imposeProfile or compliesWithProfile relationship to.')
-    .argument('<profiles...>', 'Input profile files (any extension). Snapshots are loaded from the snapshot cache.', (input, files = []) => {
+    .argument('<profiles...>', 'Input profile files (any extension). JSON snapshots are required unless --profile-cache is given.', (input, files = []) => {
       const filename = path.resolve(input);
       let stat;
       try {
@@ -876,7 +889,7 @@ if (require.main === module) {
     .option('--validatorJar <path>', 'Validator JAR (default: ../validator_cli.jar relative to the working directory)')
     .option('--languages <languages...>', 'Report languages (built in: en, nl)', ['en'])
     .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
-    .option('--snapshot-cache <directory>', 'Input profile snapshot cache with a SHA-256 index', '.profile-snapshots')
+    .option('--profile-cache <directory>', 'Enable input profile snapshot caching in this directory')
     .option('--rebasedProfiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
     .option('--csvReports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
     .hook('preAction', command => {
