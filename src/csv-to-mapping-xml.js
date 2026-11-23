@@ -50,9 +50,6 @@ class MappingArtifact {
       throw new Error(`${label} record must contain one Markdown artifact link`);
     }
     const [, name, url] = match;
-    if (/[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name)) {
-      throw new Error(`${label} artifact name cannot be used in a filename: ${name}`);
-    }
     this.name = name;
     this.url = url;
     this.canonicalBase = canonicalBase;
@@ -104,10 +101,6 @@ class MappingXML {
     );
   }
 
-  get filename() {
-    return `map-${this.source.name}-${this.target.name}.xml`;
-  }
-
   renderCell(value) {
     const lines = value.replace(/\r\n?/g, '\n').split('\n');
     const result = [];
@@ -129,9 +122,9 @@ class MappingXML {
     return result.join('');
   }
 
-  #renderCellContent(value, column) {
+  #renderCellContent(value, column, artifact) {
     if (this.headers[column].trim() === 'Element' && value.trim()) {
-      const href = this.source.href.split('#')[0] + '#' + encodeURI(value.trim());
+      const href = artifact.href.split('#')[0] + '#' + encodeURI(value.trim());
       return `<a href="${escapeXml(href)}">${escapeXml(value)}</a>`;
     } else {
       return this.renderCell(value);
@@ -158,9 +151,11 @@ class MappingXML {
   toXml() {
     const { source, target, headers, rows } = this;
     const columnClasses = this.groups.flatMap(group => Array(group.colspan).fill(this.#headerClass(group, true)));
+    const columnArtifacts = this.groups.flatMap(group =>
+      Array(group.colspan).fill(group.name === target.name ? target : source));
     const title = escapeXml(`${source.name} → ${target.name}`);
     const body = rows.map(row => {
-      return '          <tr>' + row.map((value, column) => `<td>${this.#renderCellContent(value, column)}</td>`).join('') + '</tr>';
+      return '          <tr>' + row.map((value, column) => `<td>${this.#renderCellContent(value, column, columnArtifacts[column])}</td>`).join('') + '</tr>';
     }).join('\n');
     return `<?xml version="1.0" encoding="utf-8"?>
 <div xmlns="http://www.w3.org/1999/xhtml">
@@ -209,9 +204,10 @@ class MappingGenerator {
     for (const file of files) {
       try {
         const mapping = MappingXML.fromCsv(fs.readFileSync(file, 'utf8'), canonicalBase);
-        const key = mapping.filename.toLowerCase();
-        if (outputs.has(key)) throw new Error(`Duplicate output ${mapping.filename} (also produced by ${outputs.get(key).file})`);
-        outputs.set(key, { filename: mapping.filename, xml: mapping.toXml(), file });
+        const filename = `${path.parse(file).name}.xml`;
+        const key = filename.toLowerCase();
+        if (outputs.has(key)) throw new Error(`Duplicate output ${filename} (also produced by ${outputs.get(key).file})`);
+        outputs.set(key, { filename, xml: mapping.toXml(), file });
       } catch (error) { throw new Error(`${file}: ${error.message}`); }
     }
     fs.mkdirSync(outputFolder, { recursive: true });
