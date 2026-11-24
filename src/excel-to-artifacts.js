@@ -36,27 +36,33 @@ class ExcelConvertor {
     const escapeXml = value => String(value).replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
     })[char]);
-    const rows = overview.map(row => `      <tr>${row.map(value => `<td>${escapeXml(value)}</td>`).join("")}</tr>`).join("\n");
-    return `<?xml version="1.0" encoding="utf-8"?>
-<div xmlns="http://www.w3.org/1999/xhtml">
-  <table id="concept-overview">
-    <thead><tr><th>Concept (nl)</th><th>Concept (en)</th><th>Code</th></tr></thead>
+    const rows = overview.map(row => {
+      const href = escapeXml(`${row[1]}.html`);
+      const cells = row.map((value, column) => {
+        const text = escapeXml(value);
+        return `<td>${column < 2 ? `<a href="${href}">${text}</a>` : text}</td>`;
+      }).join("");
+      return `      <tr>${cells}</tr>`;
+    }).join("\n");
+    return `<table id="concept-overview">
+    <thead><tr><th>{{ include.conceptNL }}</th><th>{{ include.conceptEN }}</th><th>{{ include.conceptCode }}</th></tr></thead>
     <tbody>
 ${rows}
     </tbody>
   </table>
+  <link rel="stylesheet" href="assets/css/dataTables.min.css"/>
+  <script defer="defer" src="assets/js/dataTables.min.js"></script>
   <script type="text/javascript">
     window.addEventListener('load', function () {
-      jQuery('#concept-overview').DataTable({
+      new DataTable("#concept-overview", {
         ordering: true,
         order: [],
         paging: false,
         searching: false,
-        info: false
+        info: false      
       });
     });
   </script>
-</div>
 `;
   }
 
@@ -613,7 +619,8 @@ async function main() {
       // Requirements use uppercase codes, so compare their normalized values.
       const code = row[2].toUpperCase();
       if (code && codes.has(code)) {
-        throw new Error(`Duplicate building block code "${code}" in ${file.name} and ${codes.get(code)}`);
+        console.error(`Duplicate building block code "${code}" in ${file.name} and ${codes.get(code)}`);
+        process.exit(1);
       }
       if (code) codes.set(code, file.name);
     }
