@@ -786,7 +786,7 @@ function run(inputs, options) {
   const csvReports = options.csvReports ? path.resolve(options.csvReports) : undefined;
   const languages = [...new Set(options.languages || ['en'])];
   languages.forEach(catalog);
-  const fhirPackage = new FhirPackage(options.ig, options.cache);
+  const fhirPackage = new FhirPackage(options.ig, options.packageCache);
   let written = 0;
   const destinations = new Set();
   let profiles;
@@ -886,16 +886,16 @@ if (require.main === module) {
       }
       return [...previous, value];
     })
-    .option('--validatorJar <path>', 'Validator JAR (default: ../validator_cli.jar relative to the working directory)')
     .option('--languages <languages...>', 'Report languages (built in: en, nl)', ['en'])
-    .option('--cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
+    .option('--rebased-profiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
+    .option('--csv-reports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
+    .option('--validatorJar <path>', 'Validator JAR (default: ../validator_cli.jar relative to the working directory)')
     .option('--profile-cache <directory>', 'Enable input profile snapshot caching in this directory')
-    .option('--rebasedProfiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
-    .option('--csvReports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
+    .option('--package-cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
     .hook('preAction', command => {
       const options = command.opts();
       if (!options.rebasedProfiles && !options.csvReports) {
-        command.error('At least one of --rebasedProfiles or --csvReports is required.');
+        command.error('At least one of --rebased-profiles or --csv-reports is required.');
       }
     })
     .action(run);
