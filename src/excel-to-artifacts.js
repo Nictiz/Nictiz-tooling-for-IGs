@@ -50,19 +50,6 @@ class ExcelConvertor {
 ${rows}
     </tbody>
   </table>
-  <link rel="stylesheet" href="assets/css/dataTables.min.css"/>
-  <script defer="defer" src="assets/js/dataTables.min.js"></script>
-  <script type="text/javascript">
-    window.addEventListener('load', function () {
-      new DataTable("#concept-overview", {
-        ordering: true,
-        order: [],
-        paging: false,
-        searching: false,
-        info: false      
-      });
-    });
-  </script>
 `;
   }
 
