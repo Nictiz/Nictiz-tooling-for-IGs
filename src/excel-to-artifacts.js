@@ -39,12 +39,23 @@ class ExcelConvertor {
     const rows = overview.map(row => `      <tr>${row.map(value => `<td>${escapeXml(value)}</td>`).join("")}</tr>`).join("\n");
     return `<?xml version="1.0" encoding="utf-8"?>
 <div xmlns="http://www.w3.org/1999/xhtml">
-  <table>
+  <table id="concept-overview">
     <thead><tr><th>Concept (nl)</th><th>Concept (en)</th><th>Code</th></tr></thead>
     <tbody>
 ${rows}
     </tbody>
   </table>
+  <script type="text/javascript">
+    window.addEventListener('load', function () {
+      jQuery('#concept-overview').DataTable({
+        ordering: true,
+        order: [],
+        paging: false,
+        searching: false,
+        info: false
+      });
+    });
+  </script>
 </div>
 `;
   }
