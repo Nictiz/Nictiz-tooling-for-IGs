@@ -785,7 +785,7 @@ function run(inputs, options) {
   inputs = [...new Set(inputs)];
   const rebasedProfiles = options.rebasedProfiles ? path.resolve(options.rebasedProfiles) : undefined;
   const csvReports = options.csvReports ? path.resolve(options.csvReports) : undefined;
-  const languages = [...new Set(options.languages || ['en'])];
+  const languages = [...new Set(options.language || ['en'])];
   languages.forEach(catalog);
   const packages = new IgConfig().formattedDependencies;
   const fhirPackage = new FhirPackage(packages, options.packageCache);
@@ -891,7 +891,7 @@ if (require.main === module) {
       }
       return [...previous, directory];
     }, [])
-    .option('--languages <languages...>', 'Report languages (built in: en, nl)', ['en'])
+    .option('--language <language>', 'Report language (repeatable; built in: en, nl; default: en)', (value, previous = []) => [...previous, value])
     .option('--rebased-profiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
     .option('--csv-reports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
     .option('--validatorJar <path>', 'Validator JAR (default: ../validator_cli.jar relative to the working directory)')
