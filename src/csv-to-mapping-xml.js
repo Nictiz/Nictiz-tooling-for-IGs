@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { Command } = require('commander');
+const { Command, InvalidArgumentError } = require('commander');
 const { IgConfig } = require('./ig-config');
 
 // Read logical CSV records, including quoted newlines and escaped quotes.
@@ -218,7 +218,25 @@ class MappingGenerator {
 
 if (require.main === module) {
   new Command().name('csv-to-mapping-xml').description('Create XHTML mapping tables from CSV files.')
-    .argument('<csvFiles...>', 'CSV files to convert')
+    .argument('<csvFiles...>', 'CSV files or wildcard patterns (*, ?, **) to convert', (input, files = []) => {
+      try {
+        const absolute = path.resolve(input);
+        let matches;
+        if (fs.existsSync(absolute)) {
+          if (!fs.statSync(absolute).isFile()) throw new Error(`Expected a CSV file: ${input}`);
+          matches = [absolute];
+        } else {
+          const pattern = path.sep === '\\' ? absolute.replaceAll('\\', '/') : absolute;
+          matches = fs.globSync(pattern)
+            .filter(filename => fs.statSync(filename).isFile())
+            .map(filename => path.resolve(filename)).sort();
+          if (!matches.length) throw new Error(`No CSV files match: ${input}`);
+        }
+        return [...new Set([...files, ...matches])];
+      } catch (error) {
+        throw new InvalidArgumentError(error.message);
+      }
+    })
     .requiredOption('--outputFolder <directory>', 'Destination for mapping XML files')
     .action((csvFiles, options) => {
       try { console.log(`Created ${new MappingGenerator(csvFiles, options.outputFolder).generate()} mapping file(s).`); }
