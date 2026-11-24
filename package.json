@@ -1,15 +1,18 @@
 {
   "name": "Nictiz-tooling-for-IGs",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Tools for working with IGs within Nictiz",
   "bin": {
     "csv-to-mapping": "src/csv-to-mapping-xml.js",
     "excel-to-artifacts": "src/excel-to-artifacts.js",
-    "translate-menu": "src/translate-menu.js",
-    "sync-profiles": "src/sync-profiles.js"
+    "get-from-ad": "src/get-from-ad.js",
+    "sync-profiles": "src/sync-profiles.js",
+    "profile-differences": "src/profile-differences.js",
+    "csv-to-mapping": "src/csv-to-mapping-xml.js",
+    "translate-menu": "src/translate-menu.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.17.0"
   },
   "dependencies": {
     "commander": "^15.0.0",
