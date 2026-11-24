@@ -31,6 +31,24 @@ class TargetFolders {
 }
 
 class ExcelConvertor {
+  /** Render overview rows (Dutch name, English name, code) as an XHTML table. */
+  static createOverview(overview) {
+    const escapeXml = value => String(value).replace(/[&<>"']/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
+    })[char]);
+    const rows = overview.map(row => `      <tr>${row.map(value => `<td>${escapeXml(value)}</td>`).join("")}</tr>`).join("\n");
+    return `<?xml version="1.0" encoding="utf-8"?>
+<div xmlns="http://www.w3.org/1999/xhtml">
+  <table>
+    <thead><tr><th>Concept (nl)</th><th>Concept (en)</th><th>Code</th></tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+</div>
+`;
+  }
+
   static structConcept = {
     v1: {
       nl: {
@@ -56,6 +74,7 @@ class ExcelConvertor {
         },
         key: {
           ADId: "ART-DECOR-id",
+          name: "Naam concept",
           code: "Bouwblokcode"
         },
         title: {
@@ -70,6 +89,7 @@ class ExcelConvertor {
         },
         key: {
           ADId: "ART-DECOR-id",
+          name: "Concept name",
           code: "Building block code"
         },
         title: {
@@ -218,6 +238,18 @@ class ExcelConvertor {
       this.convertConceptPage("en");
       this.convertRequirements();
     }
+  }
+
+  /** Return the v2 concept labels and original Dutch code for the overview. */
+  getOverviewRow() {
+    if (this.templateVersion !== "v2") return null;
+    const value = (language, key) => {
+      const struct = ExcelConvertor.structConcept.v2[language];
+      const rows = this.#getRows(struct.sheet) || [];
+      const row = rows.find(row => this.#cell(row, struct.col.field) === struct.key[key]);
+      return row ? this.#cell(row, struct.col.description) : "";
+    };
+    return [value("nl", "name"), value("en", "name"), value("nl", "code")];
   }
 
   convertConceptPage(language) {
@@ -533,8 +565,6 @@ class ExcelConvertor {
 
     return sources;
   }
-
-
 }
 
 function getExcelFiles(folder) {
@@ -558,12 +588,25 @@ async function main() {
   commander.program
     .argument("<inputFolder>")
     .argument("<outputFolder>")
+    .option("--overview", "Create a v2 concept overview table in pagecontent/overview.xml")
     .parse();
   const config = new IgConfig();
   const [inputFolder, outputFolder] = commander.program.args;
   const targetFolders = new TargetFolders(outputFolder);
+  const overview = [];
   for (const file of getExcelFiles(inputFolder)) {
-    new ExcelConvertor(file, targetFolders, config.canonicalBase).createRequirements();
+    const convertor = new ExcelConvertor(file, targetFolders, config.canonicalBase);
+    convertor.createRequirements();
+    if (commander.program.opts().overview) {
+      const row = convertor.getOverviewRow();
+      if (row) overview.push(row);
+    }
+  }
+  if (commander.program.opts().overview) {
+    const xml = ExcelConvertor.createOverview(overview);
+    const outputFile = path.join(targetFolders.get("PageContent"), "overview.xml");
+    fs.writeFileSync(outputFile, xml, "utf8");
+    console.log(`Wrote ${outputFile}`);
   }
 }
 
