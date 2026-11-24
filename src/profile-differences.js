@@ -781,6 +781,22 @@ class DiffBuilder {
   }
 }
 
+/** Expand profile patterns into sorted absolute file paths. */
+function expandProfileInput(input) {
+  const absolute = path.resolve(input);
+  if (fs.existsSync(absolute)) {
+    if (!fs.statSync(absolute).isFile()) throw new Error(`Expected an input profile file: ${input}`);
+    return [absolute];
+  }
+  // Node glob patterns use forward slashes, including on Windows.
+  const pattern = path.sep === '\\' ? absolute.replaceAll('\\', '/') : absolute;
+  const matches = fs.globSync(pattern)
+    .filter(filename => fs.statSync(filename).isFile())
+    .map(filename => path.resolve(filename));
+  if (!matches.length) throw new Error(`No input profile files match: ${input}`);
+  return [...new Set(matches)].sort();
+}
+
 function run(inputs, options) {
   inputs = [...new Set(inputs)];
   const rebasedProfiles = options.rebasedProfiles ? path.resolve(options.rebasedProfiles) : undefined;
@@ -871,16 +887,12 @@ if (require.main === module) {
   commander.program
     .name('profile-differences')
     .description('Find differences for profiles and the profiles they claim an imposeProfile or compliesWithProfile relationship to.')
-    .argument('<profiles...>', 'Input profile files (any extension). JSON snapshots are required unless --profile-cache is given.', (input, files = []) => {
-      const filename = path.resolve(input);
-      let stat;
+    .argument('<profiles...>', 'Input profile files or wildcard patterns (*, ?, **). JSON snapshots are required unless --profile-cache is given.', (input, files = []) => {
       try {
-        stat = fs.statSync(filename);
+        return [...new Set([...files, ...expandProfileInput(input)])];
       } catch (error) {
         throw new commander.InvalidArgumentError(`Cannot access input profile file ${input}: ${error.message}`);
       }
-      if (!stat.isFile()) throw new commander.InvalidArgumentError(`Expected an input profile file: ${input}`);
-      return [...files, filename];
     })
     .option('--ig <directory>', 'Additional folder for snapshot generation (repeatable). By default, the input folders are included.', (value, previous) => {
       const directory = path.resolve(value);
@@ -907,4 +919,4 @@ if (require.main === module) {
   commander.program.parse();
 }
 
-module.exports = { DiffBuilder, FhirPackage, ProfileComparisonReport };
+module.exports = { DiffBuilder, FhirPackage, ProfileComparisonReport, expandProfileInput };
