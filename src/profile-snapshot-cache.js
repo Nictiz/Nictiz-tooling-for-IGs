@@ -10,8 +10,15 @@ const hasSnapshot = profile => profile?.resourceType === 'StructureDefinition' &
 
 class ValidatorSnapshotGenerator {
   #validatorJar;
+  #igs;
 
-  constructor(validatorJar, execute = execFileSync) {
+  /**
+   * @param {string} [validatorJar] Validator JAR path.
+   * @param {string[]} [igs=[]] FHIR package IDs and additional folders passed as -ig arguments.
+   * @param {Function} [execute=execFileSync] Command runner; injectable for tests.
+   */
+  constructor(validatorJar, igs = [], execute = execFileSync) {
+    this.#igs = [...igs];
     if (validatorJar) {
       if (!fs.existsSync(validatorJar) || !fs.statSync(validatorJar).isFile()) {
         throw new Error(`Validator JAR not found at ${validatorJar}.`);
@@ -41,15 +48,13 @@ class ValidatorSnapshotGenerator {
    * @param {string[]} profiles Paths of profiles to convert; must occur in allProfiles.
    * @param {string[]} allProfiles Paths of additional profiles (XML or JSON) that
    *   whose containing directories should be considered for snapshot generation.
-   * @param {string[]} packages FHIR package IDs and additional folders passed as
-   *   individual -ig arguments.
    * @param {Function} [execute=execFileSync] Synchronous command runner with the
    *   execFileSync signature; tests can inject a replacement to simulate Java.
    * @returns {Map<string, object>} Parsed snapshots keyed by original input path.
    * @throws {Error} If Java fails, output is missing or invalid JSON, or a file
    *   operation fails.
    */
-  generateSnapshots(profiles, allProfiles, packages, execute = execFileSync) {
+  generateSnapshots(profiles, allProfiles, execute = execFileSync) {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-snapshots-'));
     try {
       const copies = new Map([...new Set(allProfiles)].map(filename => {
@@ -58,7 +63,7 @@ class ValidatorSnapshotGenerator {
         return [filename, target];
       }));
       const args = ['-jar', this.#validatorJar, 'snapshot', '-version', '4.0.1'];
-      for (const ig of packages) args.push('-ig', ig);
+      for (const ig of this.#igs) args.push('-ig', ig);
       const directories = new Set(allProfiles.map(filename => path.dirname(path.resolve(filename))));
       for (const directory of directories) args.push('-ig', directory);
       args.push('-outputSuffix', 'snapshot.json', ...profiles.map(filename => copies.get(filename)));
@@ -120,10 +125,10 @@ class ProfileSnapshotCache {
     let generated;
     const toGenerate = entries.filter(entry => entry.refresh && !hasSnapshot(entry.inputProfile));
     if (toGenerate.length) {
-      const generator = new ValidatorSnapshotGenerator(this.validatorJar, this.execute);
+      const generator = new ValidatorSnapshotGenerator(this.validatorJar, this.packages, this.execute);
       generated = generator.generateSnapshots(
         toGenerate.map(entry => entry.path),
-        entries.map(entry => entry.path), this.packages, this.execute);
+        entries.map(entry => entry.path), this.execute);
     }
     const results = new Map();
     for (const entry of entries) {
