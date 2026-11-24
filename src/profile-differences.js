@@ -6,7 +6,7 @@ const { homedir } = require('node:os');
 const { isDeepStrictEqual } = require('node:util');
 const commander= require('commander');
 const { parsePo, translationFor } = require('./po');
-const { ProfileSnapshotCache, hasSnapshot } = require('./profile-snapshot-cache');
+const { ProfileSnapshotCache, ValidatorSnapshotGenerator, hasSnapshot } = require('./profile-snapshot-cache');
 const { IgConfig } = require('./ig-config');
 
 const catalogs = new Map([['en', new Map()]]);
@@ -256,15 +256,28 @@ class ProfileComparisonReport {
 
 class FhirPackage {
   #additionalPackages;
+  #validatorJar;
 
-  /** Accept one package ID or an ordered list of package IDs. */
-  constructor(ig, cache = path.join(homedir(), '.fhir', 'packages')) {
+  /** Ensure supplied package IDs are installed before searching them.
+   * Dependency manifests are not traversed during installation checks.
+   */
+  constructor(ig, cache = path.join(homedir(), '.fhir', 'packages'), validatorJar) {
     const packages = Array.isArray(ig) ? ig : [ig];
     if (!packages.length) throw new Error('At least one FHIR package is required');
     this.ig = packages[0];
-    this.#additionalPackages = packages.slice(1).map(id => new FhirPackage(id, cache));
+    this.#validatorJar = validatorJar;
     this.cache = cache;
     this.profiles = undefined;
+    const isInstalled = id => fs.existsSync(path.join(cache, id, 'package', 'package.json'));
+    const missing = [...new Set(packages)].filter(id => !isInstalled(id));
+    if (missing.length) {
+      new ValidatorSnapshotGenerator(validatorJar).installDependencies(missing);
+      const stillMissing = missing.filter(id => !isInstalled(id));
+      if (stillMissing.length) {
+        throw new Error(`Packages not found in ${cache} after installation: ${stillMissing.join(', ')}. The validator must use the same package cache.`);
+      }
+    }
+    this.#additionalPackages = packages.slice(1).map(id => new FhirPackage(id, cache, validatorJar));
   }
 
   #load() {
@@ -325,7 +338,7 @@ class FhirPackage {
       }
       const dependencies = readJson(manifest).dependencies || {};
       for (const [id, version] of Object.entries(dependencies)) {
-        pending.push(new FhirPackage(`${id}#${version}`, this.cache));
+        pending.push(new FhirPackage(`${id}#${version}`, this.cache, this.#validatorJar));
       }
     }
     const packages = [this, ...this.#additionalPackages].map(pkg => pkg.ig).join(', ');
@@ -805,7 +818,7 @@ function run(inputs, options) {
   const languages = [...new Set(options.language || ['en'])];
   languages.forEach(catalog);
   const packages = new IgConfig().formattedDependencies;
-  const fhirPackage = new FhirPackage(packages, options.packageCache);
+  const fhirPackage = new FhirPackage(packages, options.packageCache, options.validatorJar);
   let written = 0;
   const destinations = new Set();
   let profiles;

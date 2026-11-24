@@ -37,6 +37,14 @@ class ValidatorSnapshotGenerator {
     }
   }
 
+  /** Install the supplied package IDs and versions using the validator's package cache. */
+  installDependencies(packages, execute = execFileSync) {
+    const missing = [...new Set(packages)];
+    if (!missing.length) return;
+    execute('java', ['-jar', this.#validatorJar, 'install', '-version', '4.0.1',
+      ...missing.flatMap(packageId => ['-ig', packageId])], { stdio: 'inherit' });
+  }
+
   /**
    * Generate FHIR R4 snapshots in one synchronous validator invocation.
    * Copies all input profiles to a temporary directory and supplies their
