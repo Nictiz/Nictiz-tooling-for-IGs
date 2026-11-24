@@ -4,7 +4,7 @@ const XLSX = require("xlsx");
 const fs = require("fs");
 const path = require("path");
 const commander = require("commander");
-const { parseSushiYaml } = require("./ig-config");
+const { IgConfig } = require("./ig-config");
 
 const translationExtensionUrl = "http://hl7.org/fhir/StructureDefinition/translation";
 
@@ -559,7 +559,7 @@ async function main() {
     .argument("<inputFolder>")
     .argument("<outputFolder>")
     .parse();
-  const config = parseSushiYaml();
+  const config = new IgConfig();
   const [inputFolder, outputFolder] = commander.program.args;
   const targetFolders = new TargetFolders(outputFolder);
   for (const file of getExcelFiles(inputFolder)) {

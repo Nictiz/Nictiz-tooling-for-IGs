@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { Command } = require('commander');
-const { parseSushiYaml } = require('./ig-config');
+const { IgConfig } = require('./ig-config');
 
 // Read logical CSV records, including quoted newlines and escaped quotes.
 class CsvParser {
@@ -90,7 +90,7 @@ class MappingXML {
     this.rows = rows;
   }
 
-  static fromCsv(text, canonicalBase = parseSushiYaml().canonicalBase) {
+  static fromCsv(text, canonicalBase = new IgConfig().canonicalBase) {
     const records = CsvParser.parse(text);
     return new MappingXML(
       new MappingArtifact(records[0], 'Source', canonicalBase),
@@ -198,7 +198,7 @@ class MappingGenerator {
 
   generate() {
     const { files, outputFolder } = this;
-    const { canonicalBase } = parseSushiYaml();
+    const { canonicalBase } = new IgConfig();
     // Validate all files and output names before writing anything.
     const outputs = new Map();
     for (const file of files) {

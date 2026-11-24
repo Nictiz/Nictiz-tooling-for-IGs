@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const commander = require("commander");
-const { parseSushiYaml } = require("./ig-config");
+const { IgConfig } = require("./ig-config");
 const { getLogicalModelReferences } = require("./excel-to-artifacts");
 
 const translationExtensionUrl = "http://hl7.org/fhir/StructureDefinition/translation";
@@ -523,7 +523,7 @@ async function main() {
   const doProfiles = Boolean(options.profileArtifacts);
   const doValueSets = doProfiles || (doLogicalModels && !options.dontDescend);
   
-  const config = parseSushiYaml();
+  const config = new IgConfig();
   if (!config.adProject) throw new Error("No ART-DECOR project configured in sushi-config.yaml");
   
   const artDecorDownloader = new ArtDecorDownloader(config.adProject, outputFolder, options.cacheFolder);

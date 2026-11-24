@@ -41,7 +41,8 @@ class ValidatorSnapshotGenerator {
    * @param {string[]} profiles Paths of profiles to convert; must occur in allProfiles.
    * @param {string[]} allProfiles Paths of additional profiles (XML or JSON) that
    *   whose containing directories should be considered for snapshot generation.
-   * @param {string[]} packages FHIR packages passed as individual -ig arguments.
+   * @param {string[]} packages FHIR package IDs and additional folders passed as
+   *   individual -ig arguments.
    * @param {Function} [execute=execFileSync] Synchronous command runner with the
    *   execFileSync signature; tests can inject a replacement to simulate Java.
    * @returns {Map<string, object>} Parsed snapshots keyed by original input path.
