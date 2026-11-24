@@ -605,11 +605,20 @@ async function main() {
   const [inputFolder, outputFolder] = commander.program.args;
   const targetFolders = new TargetFolders(outputFolder);
   const overview = [];
+  const codes = new Map();
   for (const file of getExcelFiles(inputFolder)) {
     const convertor = new ExcelConvertor(file, targetFolders, config.canonicalBase);
+    const row = convertor.getOverviewRow();
+    if (row) {
+      // Requirements use uppercase codes, so compare their normalized values.
+      const code = row[2].toUpperCase();
+      if (code && codes.has(code)) {
+        throw new Error(`Duplicate building block code "${code}" in ${file.name} and ${codes.get(code)}`);
+      }
+      if (code) codes.set(code, file.name);
+    }
     convertor.createRequirements();
     if (commander.program.opts().overview) {
-      const row = convertor.getOverviewRow();
       if (row) overview.push(row);
     }
   }
