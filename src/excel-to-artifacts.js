@@ -605,7 +605,7 @@ async function main() {
   commander.program
     .argument("<inputFolder>")
     .argument("<outputFolder>")
-    .option("--overview", "Create a v2 concept overview table in pagecontent/overview.xml")
+    .option("--overview", "Create a concept overview table in pagecontent/overview.xml")
     .parse();
   const config = new IgConfig();
   const [inputFolder, outputFolder] = commander.program.args;

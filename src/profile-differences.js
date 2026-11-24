@@ -809,8 +809,8 @@ function run(inputs, options) {
   let written = 0;
   const destinations = new Set();
   let profiles;
-  if (options.profileCache) {
-    const snapshotCache = new ProfileSnapshotCache(options.profileCache, {
+  if (options.snapshotCache) {
+    const snapshotCache = new ProfileSnapshotCache(options.snapshotCache, {
       validatorJar: options.validatorJar, packages: [...packages, ...options.ig],
     });
     profiles = snapshotCache.load(inputs);
@@ -895,6 +895,12 @@ if (require.main === module) {
         throw new commander.InvalidArgumentError(`Cannot access input profile file ${input}: ${error.message}`);
       }
     })
+    .option('--rebased-profiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
+    .option('--csv-reports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
+    .option('--language <language>', 'Report language (repeatable; built in: en, nl; default: en)', (value, previous = []) => [...previous, value])
+    .option('--validator-jar <path>', 'Validator JAR (default: ../validator_cli.jar relative to the working directory)')
+    .option('--snapshot-cache <directory>', 'Enable input profile snapshot caching in this directory')
+    .option('--package-cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
     .option('--ig <directory>', 'Additional folder for snapshot generation (repeatable). By default, the input folders are included.', (value, previous) => {
       const directory = path.resolve(value);
       try {
@@ -904,12 +910,6 @@ if (require.main === module) {
       }
       return [...previous, directory];
     }, [])
-    .option('--language <language>', 'Report language (repeatable; built in: en, nl; default: en)', (value, previous = []) => [...previous, value])
-    .option('--rebased-profiles <directory>', 'When given, create rebased profiles (af if their base definition was the related profile) in the specified directory.')
-    .option('--csv-reports <directory>', 'When given, create difference reports in CSV format in the specified directory. Existing CSV files will be overwritten, but manually added notes in the "Notes" column are retained.')
-    .option('--validatorJar <path>', 'Validator JAR (default: ../validator_cli.jar relative to the working directory)')
-    .option('--profile-cache <directory>', 'Enable input profile snapshot caching in this directory')
-    .option('--package-cache <directory>', 'FHIR package cache', path.join(homedir(), '.fhir', 'packages'))
     .hook('preAction', command => {
       const options = command.opts();
       if (!options.rebasedProfiles && !options.csvReports) {
