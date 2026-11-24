@@ -644,7 +644,7 @@ class DiffBuilder {
       // Local components belong to the enclosing definition even when the reference does not expand them.
       if (context.parent && !context.element.type?.some(type => type.code === 'Extension' && type.profile?.length)) continue;
       newExtensions.push(context.root);
-      const reportPath = `${context.root.slice(0, context.root.lastIndexOf('.'))}:${context.element.sliceName}`;
+      const reportPath = context.root;
       this.comparisonReport?.addDifference(reportPath,
         'new extension', '', context.element.sliceName, '');
     }
