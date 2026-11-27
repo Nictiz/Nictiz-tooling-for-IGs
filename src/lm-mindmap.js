@@ -101,7 +101,7 @@ class MindMapper {
     const connections = [];
     const usedIds = new Set();
     const markdownEscape = value => value.replace(/[\\`*_{}\[\]<>|]/g, '\\$&').replace(/[\r\n]/g, ' ');
-    function render(node, parentId) {
+    function render(node, parentId, left = false) {
       const languages = new Set();
       for (const item of node.mappings) {
         const statement = statements.get(item.map);
@@ -118,6 +118,7 @@ class MindMapper {
       const types = [...new Set((node.element.type || [])
         .map(type => type.code)
         .filter(Boolean)
+        .filter(code => code.toLowerCase() !== 'base')
         .map(code => URL.canParse(code) ? 'Reference' : code))];
       lines.push(`${id}: |md`, `**${markdownEscape(name)}**${types.length ? '  ' : ''}`);
       if (types.length) lines.push(types.map(type => `\`${type.replace(/`/g, '')}\``).join(', '));
@@ -128,8 +129,10 @@ class MindMapper {
         lines.push(`  icon: ./assets/${icon}.png`);
       }
       lines.push('}', '');
-      if (parentId) connections.push(`${parentId} -- ${id}`);
-      for (const child of node.children) render(child, id);
+      if (parentId) connections.push(left ? `${id} -- ${parentId}` : `${parentId} -- ${id}`);
+      for (const [index, child] of node.children.entries()) {
+        render(child, id, parentId ? left : index < Math.floor(node.children.length / 2));
+      }
     }
     render(root);
     return [...lines, ...connections, ''].join('\n');
