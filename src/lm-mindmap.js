@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { Command } = require('commander');
+const { D2 } = require('@d2lang/d2');
 
 function readJson(filename) {
   return JSON.parse(fs.readFileSync(filename, 'utf8').replace(/^\uFEFF/, ''));
@@ -15,14 +16,27 @@ class MindMapper {
     this.outputFolder = outputFolder;
   }
 
-  createMindmap(filename) {
+  async createMindmap(filename, { debug = false } = {}) {
     const definition = readJson(filename);
     const resolved = this.#resolveMapping(definition, filename);
     if (!resolved) return;
     const { model, mapping, resource } = resolved;
-    const markdown = this.#renderMindmap(definition, mapping, resource);
+    const source = this.#renderMindmap(definition, mapping, resource);
     fs.mkdirSync(this.outputFolder, { recursive: true });
-    fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.md`), markdown);
+    let renderSource = source;
+    for (const icon of ['nl.png', 'eu.png', 'eu-nl.png']) {
+      const image = fs.readFileSync(path.join(__dirname, 'assets', icon));
+      renderSource = renderSource.replaceAll(`./assets/${icon}`, JSON.stringify(`data:image/png;base64,${image.toString('base64')}`));
+    }
+    if (debug) fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.d2`), renderSource);
+    const renderer = new D2();
+    try {
+      const compiled = await renderer.compile(renderSource, { layout: 'elk' });
+      const svg = await renderer.render(compiled.diagram, compiled.renderOptions);
+      fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.svg`), svg);
+    } finally {
+      await renderer.dispose();
+    }
   }
 
   #loadRequirements(directory) {
@@ -62,8 +76,32 @@ class MindMapper {
       return node.mappings.length > 0 || node.children.length > 0;
     }
     select(root);
-    const lines = ['```mermaid', 'mindmap'];
-    function render(node, depth) {
+    const lines = [
+      'direction: right', '',
+      'classes: {',
+      '  element: {',
+      '    shape: rectangle',
+      '    icon.near: center-right',
+      '    label.near: center-left',
+      '    width: 320',
+      '    height: 72',
+      '    style.fill: "#D9EAF7"',
+      '    style.stroke: "#7EA6C4"',
+      '    style.border-radius: 10',
+      '  }',
+      '  container: {',
+      '    shape: rectangle',
+      '    style.fill: "#D9EAF7"',
+      '    style.stroke: "#356A96"',
+      '    style.stroke-width: 2',
+      '    style.bold: true',
+      '  }',
+      '}', ''
+    ];
+    const connections = [];
+    const usedIds = new Set();
+    const markdownEscape = value => value.replace(/[\\`*_{}\[\]<>|]/g, '\\$&').replace(/[\r\n]/g, ' ');
+    function render(node, parentId) {
       const languages = new Set();
       for (const item of node.mappings) {
         const statement = statements.get(item.map);
@@ -71,15 +109,30 @@ class MindMapper {
         const origin = statement?.label?.match(/^(NL|EU)/)?.[1];
         if (origin) languages.add(origin);
       }
-      const label = [node.element.path.split('.').at(-1), ...[...languages].map(language => `(${language})`)].join(' ');
-      // Quoted labels keep punctuation in paths and language suffixes out of Mermaid syntax.
-      const escaped = label.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\r\n]/g, ' ');
-      const id = node.element.path.split('.').at(-1).replace(/[^a-zA-Z0-9]/g, '');
-      lines.push(`${'  '.repeat(depth + 1)}${id}["${escaped}"]`);
-      for (const child of node.children) render(child, depth + 1);
+      const name = node.element.path.split('.').at(-1);
+      const baseId = name.replace(/[^a-zA-Z0-9]/g, '') || 'element';
+      let id = baseId;
+      let suffix = 2;
+      while (usedIds.has(id)) id = `${baseId}_${suffix++}`;
+      usedIds.add(id);
+      const types = [...new Set((node.element.type || [])
+        .map(type => type.code)
+        .filter(Boolean)
+        .map(code => URL.canParse(code) ? 'Reference' : code))];
+      lines.push(`${id}: |md`, `**${markdownEscape(name)}**${types.length ? '  ' : ''}`);
+      if (types.length) lines.push(types.map(type => `\`${type.replace(/`/g, '')}\``).join(', '));
+      lines.push('| {', `  class: ${types.length ? 'element' : 'container'}`);
+      if (!parentId) lines.push('  shape: circle');
+      if (languages.size) {
+        const icon = languages.size > 1 ? 'eu-nl' : [...languages][0].toLowerCase();
+        lines.push(`  icon: ./assets/${icon}.png`);
+      }
+      lines.push('}', '');
+      if (parentId) connections.push(`${parentId} -- ${id}`);
+      for (const child of node.children) render(child, id);
     }
-    render(root, 0);
-    return [...lines, '```', ''].join('\n');
+    render(root);
+    return [...lines, ...connections, ''].join('\n');
   }
 
   #resolveMapping(definition, filename) {
@@ -97,23 +150,27 @@ class MindMapper {
   }
 }
 
-function main() {
+async function main() {
   const program = new Command()
     .name('lm-mindmap')
-    .description('Create Mermaid mindmaps of logical model mappings to Requirements statements.')
+    .description('Create D2 mindmaps and render SVGs for logical model mappings to Requirements statements.')
     .argument('<structures...>', 'FHIR StructureDefinition JSON files')
     .requiredOption('--requirements <directory>', 'Folder containing Requirements JSON resources (searched recursively)')
-    .requiredOption('--output-folder <directory>', 'Folder for generated Markdown files')
+    .requiredOption('--output-folder <directory>', 'Folder for generated SVG files')
+    .option('--debug', 'Also save the D2 source alongside the SVG')
     .parse();
   const options = program.opts();
   const mapper = new MindMapper(options.requirements, options.outputFolder);
   for (const filename of program.args) {
-    mapper.createMindmap(filename);
+    await mapper.createMindmap(filename, { debug: options.debug });
   }
 }
 
 if (require.main === module) {
-  main();
+  main().catch(error => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }
 
 module.exports = { MindMapper };

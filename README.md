@@ -19,14 +19,16 @@ This will put a folder called `node_modules` in your repo. Make sure to put it i
     npm exec -- [script name] [arguments]
 
 # Tools
-## lm-mapping
-Creates a Markdown Mermaid mindmap for each logical model with a mapping to a Requirements resource.
+## lm-mindmap
+Creates a D2 diagram and renders it to SVG for each logical model with a mapping to a Requirements resource, using `@d2lang/d2`.
 
-    lm-mapping <StructureDefinition.json> [more-files.json ...] --requirements <folder> --output <folder>
+    lm-mindmap <StructureDefinition.json> [more-files.json ...] --requirements <folder> --output-folder <folder>
+
+Add `--debug` to also save `lm-mindmap-<model name>.d2` alongside the SVG. This source includes embedded icons and can be rendered independently.
 
 The requirements folder is searched recursively for JSON Requirements resources. Models must have a name starting with `LogicalModel` and a root mapping identity starting with `requirements-<model name>`. The mapping URI selects the Requirements resource by its canonical URL. Missing Requirements resources produce a warning and the next model is processed.
 
-Output files are named `lm-mapping-<model name>.md`. The mindmap includes the snapshot root, mapped elements, and their ancestors, using full element paths as labels. Statement labels starting with `NL` or `EN` add `(NL)` or `(EN)` to the corresponding node. Existing output files with the same name are overwritten.
+Output files are named `lm-mindmap-<model name>.svg`. D2 source is compiled in memory. The diagram includes the snapshot root, mapped elements, and their ancestors. Node names use the final path segment in bold, followed by all `type.code` values. Nodes without types use the `container` class. Statement labels starting with `NL` or `EU` select `nl.png` or `eu.png`; nodes mapped to both use `eu-nl.png`. Icons are embedded in the SVG so it can be shared independently. Existing output files with the same name are overwritten.
 
 ## excel-to-artifacts
 Converts Excel files for concept and requirements documentation to content that can be published in the IG:
