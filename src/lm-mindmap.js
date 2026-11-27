@@ -21,7 +21,11 @@ class MindMapper {
     const resolved = this.#resolveMapping(definition, filename);
     if (!resolved) return;
     const { model, mapping, resource } = resolved;
-    const source = this.#renderMindmap(definition, mapping, resource);
+    let source = this.#renderMindmap(definition, mapping, resource);
+    for (const icon of ['nl.png', 'eu.png', 'eu-nl.png']) {
+      const image = fs.readFileSync(path.join(__dirname, 'assets', icon));
+      source = source.replaceAll(`./assets/images/${icon}`, JSON.stringify(`data:image/png;base64,${image.toString('base64')}`));
+    }
     fs.mkdirSync(this.outputFolder, { recursive: true });
     if (debug) fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.d2`), source);
     const renderer = new D2();

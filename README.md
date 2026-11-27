@@ -24,11 +24,11 @@ Creates a D2 diagram and renders it to SVG for each logical model with a mapping
 
     lm-mindmap <StructureDefinition.json> [more-files.json ...] --requirements <folder> --output-folder <folder>
 
-Add `--debug` to also save `lm-mindmap-<model name>.d2` alongside the SVG. Images reference PNG files in the adjacent `assets/images` folder.
+Add `--debug` to also save `lm-mindmap-<model name>.d2` alongside the SVG. Images are embedded as data URLs in both D2 and SVG output.
 
 The requirements folder is searched recursively for JSON Requirements resources. Models must have a name starting with `LogicalModel` and a root mapping identity starting with `requirements-<model name>`. The mapping URI selects the Requirements resource by its canonical URL. Missing Requirements resources produce a warning and the next model is processed.
 
-Output files are named `lm-mindmap-<model name>.svg`. D2 source is compiled in memory. The diagram includes the snapshot root, mapped elements, and their ancestors. Node names use the final path segment in bold, followed by all `type.code` values. Nodes without types or with type `Base` use the `container` class. Statement labels starting with `NL` or `EU` select `nl.png` or `eu.png`; nodes mapped to both use `eu-nl.png`. Icons are referenced from `assets/images` and assumed to exist; the script does not create or copy image files. Existing output files with the same name are overwritten.
+Output files are named `lm-mindmap-<model name>.svg`. D2 source is compiled in memory. The diagram includes the snapshot root, mapped elements, and their ancestors. Node names use the final path segment in bold, followed by all `type.code` values. Nodes without types or with type `Base` use the `container` class. Statement labels starting with `NL` or `EU` select `nl.png` or `eu.png`; nodes mapped to both use `eu-nl.png`. Bundled icons are embedded as data URLs; no separate output image files are needed. Existing output files with the same name are overwritten.
 
 ## excel-to-artifacts
 Converts Excel files for concept and requirements documentation to content that can be published in the IG:
