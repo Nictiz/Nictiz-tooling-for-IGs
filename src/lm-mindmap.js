@@ -23,15 +23,16 @@ class MindMapper {
     const { model, mapping, resource } = resolved;
     const source = this.#renderMindmap(definition, mapping, resource);
     fs.mkdirSync(this.outputFolder, { recursive: true });
-    let renderSource = source;
+    const assetsFolder = path.join(this.outputFolder, 'assets');
+    fs.mkdirSync(assetsFolder, { recursive: true });
     for (const icon of ['nl.png', 'eu.png', 'eu-nl.png']) {
       const image = fs.readFileSync(path.join(__dirname, 'assets', icon));
-      renderSource = renderSource.replaceAll(`./assets/${icon}`, JSON.stringify(`data:image/png;base64,${image.toString('base64')}`));
+      fs.writeFileSync(path.join(assetsFolder, icon), image);
     }
-    if (debug) fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.d2`), renderSource);
+    if (debug) fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.d2`), source);
     const renderer = new D2();
     try {
-      const compiled = await renderer.compile(renderSource, { layout: 'elk' });
+      const compiled = await renderer.compile(source, { layout: 'elk' });
       const svg = await renderer.render(compiled.diagram, compiled.renderOptions);
       fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.svg`), svg);
     } finally {
@@ -91,6 +92,8 @@ class MindMapper {
       '  }',
       '  container: {',
       '    shape: rectangle',
+      '    icon.near: center-right',
+      '    label.near: center-left',
       '    style.fill: "#D9EAF7"',
       '    style.stroke: "#356A96"',
       '    style.stroke-width: 2',
