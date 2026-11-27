@@ -23,12 +23,6 @@ class MindMapper {
     const { model, mapping, resource } = resolved;
     const source = this.#renderMindmap(definition, mapping, resource);
     fs.mkdirSync(this.outputFolder, { recursive: true });
-    const assetsFolder = path.join(this.outputFolder, 'assets');
-    fs.mkdirSync(assetsFolder, { recursive: true });
-    for (const icon of ['nl.png', 'eu.png', 'eu-nl.png']) {
-      const image = fs.readFileSync(path.join(__dirname, 'assets', icon));
-      fs.writeFileSync(path.join(assetsFolder, icon), image);
-    }
     if (debug) fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.d2`), source);
     const renderer = new D2();
     try {
@@ -129,7 +123,7 @@ class MindMapper {
       if (!parentId) lines.push('  shape: circle');
       if (languages.size) {
         const icon = languages.size > 1 ? 'eu-nl' : [...languages][0].toLowerCase();
-        lines.push(`  icon: ./assets/${icon}.png`);
+        lines.push(`  icon: ./assets/images/${icon}.png`);
       }
       lines.push('}', '');
       if (parentId) connections.push(left ? `${id} -- ${parentId}` : `${parentId} -- ${id}`);
