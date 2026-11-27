@@ -63,7 +63,6 @@ class MindMapper {
     }
     select(root);
     const lines = ['```mermaid', 'mindmap'];
-    let id = 0;
     function render(node, depth) {
       const languages = new Set();
       for (const item of node.mappings) {
@@ -72,10 +71,11 @@ class MindMapper {
         const origin = statement?.label?.match(/^(NL|EU)/)?.[1];
         if (origin) languages.add(origin);
       }
-      const label = [node.element.path, ...[...languages].map(language => `(${language})`)].join(' ');
+      const label = [node.element.path.split('.').at(-1), ...[...languages].map(language => `(${language})`)].join(' ');
       // Quoted labels keep punctuation in paths and language suffixes out of Mermaid syntax.
       const escaped = label.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\r\n]/g, ' ');
-      lines.push(`${'  '.repeat(depth + 1)}node${id++}["${escaped}"]`);
+      const id = node.element.path.split('.').at(-1).replace(/[^a-zA-Z0-9]/g, '');
+      lines.push(`${'  '.repeat(depth + 1)}${id}["${escaped}"]`);
       for (const child of node.children) render(child, depth + 1);
     }
     render(root, 0);
