@@ -19,6 +19,15 @@ This will put a folder called `node_modules` in your repo. Make sure to put it i
     npm exec -- [script name] [arguments]
 
 # Tools
+## lm-mapping
+Creates a Markdown Mermaid mindmap for each logical model with a mapping to a Requirements resource.
+
+    lm-mapping <StructureDefinition.json> [more-files.json ...] --requirements <folder> --output <folder>
+
+The requirements folder is searched recursively for JSON Requirements resources. Models must have a name starting with `LogicalModel` and a root mapping identity starting with `requirements-<model name>`. The mapping URI selects the Requirements resource by its canonical URL. Missing Requirements resources produce a warning and the next model is processed.
+
+Output files are named `lm-mapping-<model name>.md`. The mindmap includes the snapshot root, mapped elements, and their ancestors, using full element paths as labels. Statement labels starting with `NL` or `EN` add `(NL)` or `(EN)` to the corresponding node. Existing output files with the same name are overwritten.
+
 ## excel-to-artifacts
 Converts Excel files for concept and requirements documentation to content that can be published in the IG:
 

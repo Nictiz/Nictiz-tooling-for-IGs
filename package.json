@@ -8,7 +8,7 @@
     "get-from-ad": "src/get-from-ad.js",
     "sync-profiles": "src/sync-profiles.js",
     "profile-differences": "src/profile-differences.js",
-    "csv-to-mapping": "src/csv-to-mapping-xml.js",
+    "lm-mapping": "src/lm-mapping.js",
     "translate-menu": "src/translate-menu.js"
   },
   "engines": {
