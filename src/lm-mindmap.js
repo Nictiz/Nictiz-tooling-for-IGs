@@ -30,7 +30,7 @@ class MindMapper {
     if (debug) fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.d2`), source);
     const renderer = new D2();
     try {
-      const compiled = await renderer.compile(source, { layout: 'elk' });
+      const compiled = await renderer.compile(source, { layout: 'dagre' });
       const svg = await renderer.render(compiled.diagram, compiled.renderOptions);
       fs.writeFileSync(path.join(this.outputFolder, `lm-mindmap-${model}.svg`), svg);
     } finally {
@@ -83,8 +83,7 @@ class MindMapper {
       '    shape: rectangle',
       '    icon.near: center-right',
       '    label.near: center-left',
-      '    width: 320',
-      '    height: 72',
+      '    height: 10',
       '    style.fill: "#D9EAF7"',
       '    style.stroke: "#7EA6C4"',
       '    style.border-radius: 10',
